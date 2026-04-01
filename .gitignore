@@ -1,0 +1,80 @@
+# ========================
+# Android-specific ignores
+# ========================
+*.iml
+.gradle/
+local.properties
+/.idea/
+.DS_Store
+/build/
+/app/build/
+/captures/
+/externalNativeBuild/
+/.cxx/
+
+# ========================
+# UnityLibrary-specific ignores
+# ========================
+UnityLibrary/build/
+UnityLibrary/.gradle/
+UnityLibrary/.idea/
+UnityLibrary/local.properties
+UnityLibrary/.cxx/
+UnityLibrary/obj/
+UnityLibrary/Temp/
+UnityLibrary/Library/
+UnityLibrary/Logs/
+UnityLibrary/UserSettings/
+
+# Optional: ignore IL2CPP artifacts (if used)
+UnityLibrary/il2cpp/
+
+# Optional: ignore asset bundles or temporary data
+UnityLibrary/Assets/StreamingAssets/aa.meta
+UnityLibrary/Assets/AssetBundles/
+
+# Keep Unity code, assets, scenes, etc.
+# Don't ignore UnityLibrary/Assets/**
+
+# ========================
+# General Unity ignores
+# ========================
+[Ll]ibrary/
+[Tt]emp/
+[Oo]bj/
+[Bb]uild/
+[Bb]uilds/
+MemoryCaptures/
+UserSettings/
+Logs/
+*.csproj
+*.unityproj
+*.sln
+*.pidb
+*.userprefs
+*.booproj
+
+# Binary & output files
+*.apk
+*.aab
+*.dex
+*.so
+*.jar
+*.dll
+*.bin
+*.exe
+*.pdb
+*.mdb
+
+# ========================
+# IDE & Tool ignores
+# ========================
+.vscode/
+.idea/
+*.swp
+
+# ========================
+# OS-specific
+# ========================
+.DS_Store
+Thumbs.db
