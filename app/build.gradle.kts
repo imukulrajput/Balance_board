@@ -7,11 +7,11 @@ plugins {
 }
 
 android {
-    namespace = "com.ripplehealthcare.frst"
+    namespace = "com.ripplehealthcare.bproboard"
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "com.ripplehealthcare.frst"
+        applicationId = "com.ripplehealthcare.bproboard"
         minSdk = 24
         targetSdk = 35
         versionCode = 1
