@@ -106,7 +106,7 @@ fun ShapeTrainingScreen(
 
     val stopAndSaveData = {
         val result = ShapeTrainingResult(
-            sessionId = java.util.UUID.randomUUID().toString(),
+            sessionId = testViewModel.activeSessionId ?: java.util.UUID.randomUUID().toString(),
             patientId = testViewModel.patient.value.patientId,
             score = score,
             timeTakenMs = activeTimeMs,

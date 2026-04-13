@@ -19,8 +19,6 @@ class AuthUseCase(private val repository: AuthRepository) {
 
     fun resetPassword(email: String) = repository.sendPasswordResetEmail(email)
 
-    fun getCurrentUser(): FirebaseUser? = repository.getCurrentUser()
-
     fun signOut() {
         repository.signOut()
     }

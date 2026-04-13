@@ -78,7 +78,7 @@ fun HexagonStepGame(
                         currentPitch = currentPitch, currentYaw = currentYaw,
                         onGameOver = { score, correct, incorrect ->
                             val result = StepGameResult(
-                                sessionId = UUID.randomUUID().toString(),
+                                sessionId = testViewModel.activeSessionId ?: java.util.UUID.randomUUID().toString(),
                                 patientId = testViewModel.patient.value.patientId,
                                 score = score, correctHits = correct, incorrectHits = incorrect
                             )

@@ -42,6 +42,8 @@ fun GameSelectionScreen(
 
     LaunchedEffect(Unit) {
         bluetoothViewModel.startTest()
+
+        testViewModel.startNewSession()
     }
 
     val primaryTextColor = Color(0xFF4A44D4)

@@ -77,7 +77,7 @@ fun StarshipDefenderGame(
                             currentPitch = currentPitch,
                             onSaveData = { score, aliensHit, timeSurvivedMs, isWin ->
                                 val result = StarshipResult(
-                                    sessionId = UUID.randomUUID().toString(),
+                                    sessionId = testViewModel.activeSessionId ?: java.util.UUID.randomUUID().toString(),
                                     patientId = testViewModel.patient.value.patientId,
                                     score = score, aliensDestroyed = aliensHit,
                                     timeSurvivedMs = timeSurvivedMs, isWin = isWin

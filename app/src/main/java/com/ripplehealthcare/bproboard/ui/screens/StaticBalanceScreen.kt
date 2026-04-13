@@ -120,7 +120,7 @@ fun StaticBalanceScreen(
         val efficiency = if (totalTimeMs > 0L) ((balanceTimeMs.toFloat() / totalTimeMs.toFloat()) * 100).toInt() else 0
 
         val result = StaticBalanceResult(
-            sessionId = java.util.UUID.randomUUID().toString(),
+            sessionId = testViewModel.activeSessionId ?: java.util.UUID.randomUUID().toString(),
             patientId = testViewModel.patient.value.patientId,
             gameMode = gameMode.name,
             level = if (gameMode == GameMode.STANDING) currentLevel else 1, // <--- Locks Sitting to Level 1

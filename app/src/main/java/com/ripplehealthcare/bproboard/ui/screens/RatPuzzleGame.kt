@@ -104,7 +104,7 @@ fun RatPuzzleGame(
                     onFinishGame = { navController.popBackStack() },
                     onSaveData = { isWin, timeMs, lives ->
                         val result = RatPuzzleResult(
-                            sessionId = UUID.randomUUID().toString(),
+                            sessionId = testViewModel.activeSessionId ?: UUID.randomUUID().toString(),
                             patientId = testViewModel.patient.value.patientId,
                             isWin = isWin,
                             timeTakenMs = timeMs,
@@ -157,7 +157,6 @@ private fun MazeCanvas(
     val currentXState by rememberUpdatedState(currentXAngle)
     val currentYState by rememberUpdatedState(currentYAngle)
 
-    // REDUCED SENSITIVITY CONSTANTS
     val sensitivity = 0.05f
     val speedMultiplier = 7f
 
@@ -226,15 +225,13 @@ private fun MazeCanvas(
                 current.visited = true
                 remaining--
             } else if (stack.isNotEmpty()) {
-                current = stack.removeLast()
+                current = stack.removeAt(stack.lastIndex)
             }
         }
 
         // ────────────────────────────────────────────────
-        // NEW: MULTIPLE PATHS / BRAID MAZE LOGIC
+        // MULTIPLE PATHS / BRAID MAZE LOGIC
         // ────────────────────────────────────────────────
-
-        // 1. Remove dead ends. This guarantees loops and multiple routes!
         for (c in 0 until cols) {
             for (r in 0 until rows) {
                 val cell = grid[c][r]
@@ -244,7 +241,6 @@ private fun MazeCanvas(
                 if (cell.bottomWall) wallCount++
                 if (cell.leftWall) wallCount++
 
-                // If it's a dead end (3 walls), break one wall to connect it
                 if (wallCount >= 3) {
                     val breakable = mutableListOf<Int>()
                     if (cell.topWall && r > 0) breakable.add(0)
@@ -264,8 +260,7 @@ private fun MazeCanvas(
             }
         }
 
-        // 2. Punch a few random extra holes to create major shortcuts across the maze
-        val extraLoops = (cols * rows * 0.08).toInt() // Open ~8% of extra walls
+        val extraLoops = (cols * rows * 0.08).toInt()
         repeat(extraLoops) {
             val c = Random.nextInt(1, cols - 1)
             val r = Random.nextInt(1, rows - 1)
@@ -278,7 +273,6 @@ private fun MazeCanvas(
             }
         }
 
-        // Multiple paths to goal (open last few columns / rows for final target approach)
         val finalRow = rows - 1
         for (c in (cols - 3) until cols) {
             if (Random.nextBoolean()) {
@@ -291,11 +285,9 @@ private fun MazeCanvas(
         grid[cols - 3][finalRow - 1].bottomWall = false
         grid[cols - 2][finalRow - 1].bottomWall = false
 
-        // Build walls & holes
         val wt = wallThickness / 2f
         val newWalls = mutableListOf<Wall>()
 
-        // Outer boundary
         newWalls += Wall(0f, 0f, w, wt*2)
         newWalls += Wall(0f, logicalHeight - wt*2, w, logicalHeight)
         newWalls += Wall(0f, 0f, wt*2, logicalHeight)
@@ -322,11 +314,11 @@ private fun MazeCanvas(
                     )
                 }
 
-                if ((c == 0 && r == 0) || (c == cols-1 && r == rows-1)) continue
+                // FIXED: Protects the start zone and the entire bottom-right 2x2 grid around the target
+                if ((c == 0 && r == 0) || (c >= cols - 2 && r >= rows - 2)) continue
 
                 val wallCount = listOf(cell.topWall, cell.rightWall, cell.bottomWall, cell.leftWall).count { it }
 
-                // Determine trap/hole logic
                 if (wallCount >= 3 && Random.nextInt(1, 101) <= 85) {
                     newHoles += Hole(x + cellSize/2, y + cellSize/2, holeRadiusPx)
                 } else if (pattern == 5 && wallCount == 2 && Random.nextInt(1, 101) <= 45) {
@@ -367,7 +359,6 @@ private fun MazeCanvas(
                     timeTakenMs += deltaMs
 
                     val speed = speedMultiplier
-                    // REDUCED AND CLAMPED VELOCITY LIMITS
                     velX = (currentXState * sensitivity * speed).coerceIn(-6f, 6f)
                     velY = (currentYState * sensitivity * speed).coerceIn(-6f, 6f)
 
@@ -423,7 +414,19 @@ private fun MazeCanvas(
                         }
                     }
 
-                    if (died) {
+                    // FIXED: Check if they touched the target first!
+                    val reachedTarget = ballX > target.left && ballX < target.right &&
+                            ballY > target.top  && ballY < target.bottom
+
+                    if (reachedTarget) {
+                        if (!dataSaved) {
+                            dataSaved = true
+                            onSaveData(true, timeTakenMs, lives)
+                        }
+                        onStateChange(MazeGameState.LevelComplete)
+
+                        // If they haven't won, THEN check if they fell in a hole
+                    } else if (died) {
                         lives--
                         if (lives <= 0) {
                             if (!dataSaved) {
@@ -434,13 +437,6 @@ private fun MazeCanvas(
                         } else {
                             isRespawning = true
                         }
-                    } else if (ballX > target.left && ballX < target.right &&
-                        ballY > target.top  && ballY < target.bottom) {
-                        if (!dataSaved) {
-                            dataSaved = true
-                            onSaveData(true, timeTakenMs, lives)
-                        }
-                        onStateChange(MazeGameState.LevelComplete)
                     }
                 }
             }
@@ -553,13 +549,12 @@ private fun MazeOverlay(
             }
         }
 
-        // SHOW END SCREEN AS A FULL-SCREEN DIALOG OVER EVERYTHING
         if (gameState == MazeGameState.GameOver || gameState == MazeGameState.LevelComplete) {
             Dialog(
-                onDismissRequest = { onFinish() }, // 1. Call onFinish to pop the backstack
+                onDismissRequest = { onFinish() },
                 properties = DialogProperties(
                     usePlatformDefaultWidth = false,
-                    dismissOnBackPress = true,     // 2. Change this from false to TRUE
+                    dismissOnBackPress = true,
                     dismissOnClickOutside = false
                 )
             ) {

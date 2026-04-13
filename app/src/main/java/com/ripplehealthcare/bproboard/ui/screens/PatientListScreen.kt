@@ -23,7 +23,6 @@ import androidx.compose.ui.unit.sp
 import androidx.navigation.NavController
 import com.ripplehealthcare.bproboard.domain.model.Gender
 import com.ripplehealthcare.bproboard.domain.model.Patient
-import com.ripplehealthcare.bproboard.domain.model.TestType
 import com.ripplehealthcare.bproboard.ui.theme.PrimaryColor
 import com.ripplehealthcare.bproboard.ui.viewmodel.PatientViewModel
 import com.ripplehealthcare.bproboard.ui.viewmodel.TestViewModel
@@ -116,9 +115,6 @@ fun PatientListScreen(
                             patient = patient,
                             onClick = {
                                 testViewModel.setPatient(patient)
-                                testViewModel.setTestType(TestType.NONE)
-                                testViewModel.resetTestData()
-                                // Navigate directly to game selection
                                 navController.navigate("gameSelection")
                             },
                             onEditClick = {

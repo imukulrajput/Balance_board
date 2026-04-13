@@ -15,6 +15,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.ArrowForward
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -34,19 +35,52 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.navigation.NavController
 import com.ripplehealthcare.bproboard.domain.model.*
 import com.ripplehealthcare.bproboard.ui.viewmodel.TestViewModel
 import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.sin
 import kotlin.math.sqrt
 
+// --- Helper to calculate clinical difficulty weight ---
+fun calculateClinicalWeight(posture: String?, level: Int?): Float {
+    val pWeight = if (posture.equals("STANDING", ignoreCase = true)) 1.2f else 1.0f
+    val lWeight = when (level) {
+        3 -> 1.5f
+        2 -> 1.25f
+        else -> 1.0f
+    }
+    return pWeight * lWeight
+}
+
 data class ChartData(val label: String, val value: Float)
+
+// --- Data Class to group all results by a single Session ID ---
+data class GroupedSession(
+    val sessionId: String,
+    val timestamp: Date,
+    val staticResults: List<StaticBalanceResult>,
+    val patternResults: List<PatternDrawingResult>,
+    val shapeResults: List<ShapeTrainingResult>,
+    val colorSorterResults: List<ColorSorterResult>,
+    val ratPuzzleResults: List<RatPuzzleResult>,
+    val starshipResults: List<StarshipResult>,
+    val holePuzzleResults: List<HolePuzzleResult>,
+    val stepGameResults: List<StepGameResult>
+) {
+    val totalModulesPlayed = staticResults.size + patternResults.size + shapeResults.size +
+            colorSorterResults.size + ratPuzzleResults.size + starshipResults.size +
+            holePuzzleResults.size + stepGameResults.size
+
+    val totalFalls = staticResults.sumOf { it.fallCount } + patternResults.sumOf { it.fallCount } + shapeResults.sumOf { it.fallCount }
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -64,9 +98,12 @@ fun GraphViewScreen(
     val holePuzzleResults by testViewModel.holePuzzleResults.collectAsState()
     val stepGameResults by testViewModel.stepGameResults.collectAsState()
 
-    var selectedMode by remember { mutableStateOf("Training") }
+    var selectedMode by remember { mutableStateOf("Session") }
     var selectedGame by remember { mutableStateOf("Overview Dashboard") }
     var selectedMetric by remember { mutableStateOf("Efficiency") }
+
+    var selectedGroupedSession by remember { mutableStateOf<GroupedSession?>(null) }
+    var selectedOverviewSession by remember { mutableStateOf<GroupedSession?>(null) }
 
     var selectedStaticSession by remember { mutableStateOf<StaticBalanceResult?>(null) }
     var selectedPatternSession by remember { mutableStateOf<PatternDrawingResult?>(null) }
@@ -77,16 +114,27 @@ fun GraphViewScreen(
     var selectedHoleSession by remember { mutableStateOf<HolePuzzleResult?>(null) }
     var selectedStepSession by remember { mutableStateOf<StepGameResult?>(null) }
 
-    val gameList = listOf("Color Sorter", "Rat Puzzle", "Starship Defender", "Hole Navigator", "Step Game")
+    val clearDetailedSessions = {
+        selectedStaticSession = null
+        selectedPatternSession = null
+        selectedShapeSession = null
+        selectedColorSorterSession = null
+        selectedRatSession = null
+        selectedStarshipSession = null
+        selectedHoleSession = null
+        selectedStepSession = null
+    }
+
+    val gameList = listOf("Overview Dashboard", "Color Sorter", "Rat Puzzle", "Starship Defender", "Hole Navigator", "Step Game")
     val trainingList = listOf("Overview Dashboard", "Static Balance", "Pattern Drawing", "Shape Training")
     val currentList = if (selectedMode == "Game") gameList else trainingList
 
     val primaryColor = Color(0xFF4A44D4)
-    val lightPrimary = Color(0xFF8C9EFF)
     val backgroundGradient = Brush.verticalGradient(
         colors = listOf(Color(0xFFE0F7FA), Color(0xFFB2EBF2))
     )
     val dateFormatter = SimpleDateFormat("MMM dd", Locale.getDefault())
+    val fullDateFormatter = SimpleDateFormat("MMM dd, yyyy - hh:mm a", Locale.getDefault())
 
     val availableMetrics = when (selectedGame) {
         "Static Balance" -> listOf("Efficiency", "Falls", "Balance Time", "Avg Fall Error (°)")
@@ -99,7 +147,43 @@ fun GraphViewScreen(
         else -> listOf("Time", "Score")
     }
 
-    // Tools for drawing clinical annotation text on Canvas
+    // Aggregating all data into GroupedSessions
+    val groupedSessions = remember(
+        staticBalanceResults, patternDrawingResults, shapeTrainingResults,
+        colorSorterResults, ratPuzzleResults, starshipResults, holePuzzleResults, stepGameResults
+    ) {
+        val allIds = (staticBalanceResults.map { it.sessionId } +
+                patternDrawingResults.map { it.sessionId } +
+                shapeTrainingResults.map { it.sessionId } +
+                colorSorterResults.map { it.sessionId } +
+                ratPuzzleResults.map { it.sessionId } +
+                starshipResults.map { it.sessionId } +
+                holePuzzleResults.map { it.sessionId } +
+                stepGameResults.map { it.sessionId }).distinct()
+
+        allIds.mapNotNull { sid ->
+            val statics = staticBalanceResults.filter { it.sessionId == sid }
+            val patterns = patternDrawingResults.filter { it.sessionId == sid }
+            val shapes = shapeTrainingResults.filter { it.sessionId == sid }
+            val colors = colorSorterResults.filter { it.sessionId == sid }
+            val rats = ratPuzzleResults.filter { it.sessionId == sid }
+            val stars = starshipResults.filter { it.sessionId == sid }
+            val holes = holePuzzleResults.filter { it.sessionId == sid }
+            val steps = stepGameResults.filter { it.sessionId == sid }
+
+            val minTime = listOfNotNull(
+                statics.minOfOrNull { it.timestamp }, patterns.minOfOrNull { it.timestamp },
+                shapes.minOfOrNull { it.timestamp }, colors.minOfOrNull { it.timestamp },
+                rats.minOfOrNull { it.timestamp }, stars.minOfOrNull { it.timestamp },
+                holes.minOfOrNull { it.timestamp }, steps.minOfOrNull { it.timestamp }
+            ).minOrNull()
+
+            if (minTime != null) {
+                GroupedSession(sid, minTime, statics, patterns, shapes, colors, rats, stars, holes, steps)
+            } else null
+        }.sortedByDescending { it.timestamp }
+    }
+
     val density = LocalDensity.current
     val textPaintRight = remember(density) {
         Paint().apply {
@@ -119,7 +203,7 @@ fun GraphViewScreen(
     }
 
     LaunchedEffect(selectedMode) {
-        if (!currentList.contains(selectedGame)) {
+        if (selectedMode != "Session" && !currentList.contains(selectedGame)) {
             selectedGame = currentList.firstOrNull() ?: ""
         }
     }
@@ -137,7 +221,7 @@ fun GraphViewScreen(
         }
     }
 
-    LaunchedEffect(selectedGame) {
+    LaunchedEffect(selectedGame, selectedMode) {
         selectedStaticSession = null
         selectedPatternSession = null
         selectedShapeSession = null
@@ -146,6 +230,8 @@ fun GraphViewScreen(
         selectedStarshipSession = null
         selectedHoleSession = null
         selectedStepSession = null
+        selectedGroupedSession = null
+        selectedOverviewSession = null
 
         if (selectedGame != "Overview Dashboard" && !availableMetrics.contains(selectedMetric)) {
             selectedMetric = availableMetrics.first()
@@ -171,25 +257,39 @@ fun GraphViewScreen(
                     .padding(start = 24.dp, end = 24.dp, top = 8.dp, bottom = 16.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                // Mode Toggle (Game / Training)
-                Box(modifier = Modifier.width(300.dp)) {
+                // Mode Toggle (Session / Training / Game)
+                Box(modifier = Modifier.fillMaxWidth(0.9f)) {
                     SegmentedToggle(
-                        options = listOf("Game", "Training"),
+                        options = listOf("Session", "Training", "Game"),
                         selectedOption = selectedMode,
-                        onOptionSelected = { selectedMode = it },
+                        onOptionSelected = {
+                            if (selectedMode != it) {
+                                selectedMode = it
+                                selectedGame = if (it == "Game") gameList.first() else trainingList.first()
+                                clearDetailedSessions()
+                                selectedGroupedSession = null
+                                selectedOverviewSession = null
+                            }
+                        },
                         primaryColor = primaryColor
                     )
                 }
 
-                Spacer(modifier = Modifier.height(12.dp))
-
-                // Module Selector Dropdown
-                GameSelectorDropdown(
-                    items = currentList,
-                    selectedItem = selectedGame,
-                    onItemSelected = { selectedGame = it },
-                    primaryColor = primaryColor
-                )
+                // Dropdown (Hidden when in Session Mode)
+                if (selectedMode != "Session") {
+                    Spacer(modifier = Modifier.height(12.dp))
+                    GameSelectorDropdown(
+                        items = currentList,
+                        selectedItem = selectedGame,
+                        onItemSelected = {
+                            if (selectedGame != it) {
+                                selectedGame = it
+                                clearDetailedSessions()
+                            }
+                        },
+                        primaryColor = primaryColor
+                    )
+                }
             }
 
             // --- FULL WIDTH GRAPH CARD ---
@@ -217,59 +317,118 @@ fun GraphViewScreen(
                             .padding(16.dp),
                         contentAlignment = Alignment.TopCenter
                     ) {
-                        when (selectedGame) {
-                            // ==========================================
-                            // OVERVIEW DASHBOARD LOGIC
-                            // ==========================================
-                            "Overview Dashboard" -> {
-                                val latestStatic = staticBalanceResults.maxByOrNull { it.timestamp }
-                                val latestPattern = patternDrawingResults.maxByOrNull { it.timestamp }
-                                val latestShape = shapeTrainingResults.maxByOrNull { it.timestamp }
 
-                                if (latestStatic == null && latestPattern == null && latestShape == null) {
-                                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                                        Text("No training data available yet to generate a report.", color = Color.Gray)
+                        // ==========================================
+                        // SESSION WISE LOGIC BRANCH
+                        // ==========================================
+                        if (selectedMode == "Session") {
+                            if (groupedSessions.isEmpty()) {
+                                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                    Text("No sessions recorded yet.", color = Color.Gray)
+                                }
+                            } else if (selectedGroupedSession == null) {
+                                // --- LIST ALL SESSIONS ---
+                                Column(modifier = Modifier.fillMaxSize()) {
+                                    Text("Patient Clinical Visits", fontWeight = FontWeight.Bold, color = primaryColor, fontSize = 18.sp, modifier = Modifier.padding(bottom = 16.dp))
+                                    LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                                        items(groupedSessions) { session ->
+                                            Card(
+                                                modifier = Modifier.fillMaxWidth().clickable { selectedGroupedSession = session },
+                                                colors = CardDefaults.cardColors(containerColor = Color(0xFFF0F4F8)),
+                                                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+                                            ) {
+                                                Row(
+                                                    modifier = Modifier.padding(16.dp).fillMaxWidth(),
+                                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                                    verticalAlignment = Alignment.CenterVertically
+                                                ) {
+                                                    Column {
+                                                        Text(text = fullDateFormatter.format(session.timestamp), fontWeight = FontWeight.Bold, fontSize = 16.sp, color = Color.Black)
+                                                        Text(text = "${session.totalModulesPlayed} Modules Completed", fontSize = 14.sp, color = Color.DarkGray)
+                                                    }
+                                                    Column(horizontalAlignment = Alignment.End) {
+                                                        Text("Total Falls", fontSize = 10.sp, color = Color.Gray)
+                                                        Text(text = "${session.totalFalls}", fontWeight = FontWeight.Bold, color = if (session.totalFalls > 0) Color.Red else Color(0xFF4CAF50), fontSize = 18.sp)
+                                                    }
+                                                }
+                                            }
+                                        }
                                     }
-                                } else {
-                                    val sortedStatic = staticBalanceResults.sortedByDescending { it.timestamp }
-                                    val prevStatic = if (sortedStatic.size > 1) sortedStatic[1] else null
+                                }
+                            } else {
+                                // --- SESSION DETAIL REPORT ---
+                                val session = selectedGroupedSession!!
 
-                                    val sortedPattern = patternDrawingResults.sortedByDescending { it.timestamp }
-                                    val prevPattern = if (sortedPattern.size > 1) sortedPattern[1] else null
+                                val sortedAsc = groupedSessions.sortedBy { it.timestamp }
+                                val currentIndex = sortedAsc.indexOf(session)
+                                val prevSession = if (currentIndex > 0) sortedAsc[currentIndex - 1] else null
 
-                                    val sortedShape = shapeTrainingResults.sortedByDescending { it.timestamp }
-                                    val prevShape = if (sortedShape.size > 1) sortedShape[1] else null
+                                val latestStatic = session.staticResults.maxByOrNull { it.timestamp }
+                                val latestPattern = session.patternResults.maxByOrNull { it.timestamp }
+                                val latestShape = session.shapeResults.maxByOrNull { it.timestamp }
 
-                                    val currentFalls = (latestStatic?.fallCount ?: 0) + (latestPattern?.fallCount ?: 0) + (latestShape?.fallCount ?: 0)
-                                    val prevFalls = (prevStatic?.fallCount ?: 0) + (prevPattern?.fallCount ?: 0) + (prevShape?.fallCount ?: 0)
+                                // 1. Calculate Raw Percentages
+                                val rawStatic = (latestStatic?.efficiencyPercentage?.toFloat() ?: 0f) / 100f
+                                val rawPattern = if (latestPattern != null && latestPattern.totalTargets > 0) (latestPattern.targetsHit.toFloat() / latestPattern.totalTargets) else 0f
+                                val rawShape = (latestShape?.score?.toFloat() ?: 0f) / 10f
 
-                                    val staticScore = (latestStatic?.efficiencyPercentage?.toFloat() ?: 0f) / 100f
-                                    val patternScore = if (latestPattern != null && latestPattern.totalTargets > 0) (latestPattern.targetsHit.toFloat() / latestPattern.totalTargets) else 0f
-                                    val shapeScore = (latestShape?.score?.toFloat() ?: 0f) / 10f
+                                val prevRawStatic = (prevSession?.staticResults?.maxByOrNull { it.timestamp }?.efficiencyPercentage?.toFloat() ?: 0f) / 100f
+                                val prevRawPattern = prevSession?.patternResults?.maxByOrNull { it.timestamp }?.let { if (it.totalTargets > 0) it.targetsHit.toFloat() / it.totalTargets else 0f } ?: 0f
+                                val prevRawShape = (prevSession?.shapeResults?.maxByOrNull { it.timestamp }?.score?.toFloat() ?: 0f) / 10f
 
-                                    val prevStaticScore = (prevStatic?.efficiencyPercentage?.toFloat() ?: 0f) / 100f
-                                    val prevPatternScore = if (prevPattern != null && prevPattern.totalTargets > 0) (prevPattern.targetsHit.toFloat() / prevPattern.totalTargets) else 0f
-                                    val prevShapeScore = (prevShape?.score?.toFloat() ?: 0f) / 10f
+                                // 2. Apply Weighted Multiplier and Cap at 100%
+                                val staticScore = (rawStatic * calculateClinicalWeight(latestStatic?.gameMode, latestStatic?.level)).coerceAtMost(1f)
+                                val patternScore = (rawPattern * calculateClinicalWeight(latestPattern?.gameMode, latestPattern?.level)).coerceAtMost(1f)
+                                val shapeScore = (rawShape * calculateClinicalWeight(latestShape?.gameMode, latestShape?.level)).coerceAtMost(1f)
 
-                                    val globalScore = ((staticScore + patternScore + shapeScore.coerceAtMost(1f)) / 3f) * 100
-                                    val prevGlobalScore = ((prevStaticScore + prevPatternScore + prevShapeScore.coerceAtMost(1f)) / 3f) * 100
+                                val prevStaticScore = (prevRawStatic * calculateClinicalWeight(prevSession?.staticResults?.maxByOrNull { it.timestamp }?.gameMode, prevSession?.staticResults?.maxByOrNull { it.timestamp }?.level)).coerceAtMost(1f)
+                                val prevPatternScore = (prevRawPattern * calculateClinicalWeight(prevSession?.patternResults?.maxByOrNull { it.timestamp }?.gameMode, prevSession?.patternResults?.maxByOrNull { it.timestamp }?.level)).coerceAtMost(1f)
+                                val prevShapeScore = (prevRawShape * calculateClinicalWeight(prevSession?.shapeResults?.maxByOrNull { it.timestamp }?.gameMode, prevSession?.shapeResults?.maxByOrNull { it.timestamp }?.level)).coerceAtMost(1f)
 
-                                    Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
-                                        Text("Global Stability Report", fontWeight = FontWeight.Bold, color = primaryColor, fontSize = 20.sp, modifier = Modifier.padding(bottom = 16.dp))
+                                // 3. Dynamic Averaging
+                                val currentModulesPlayed = listOfNotNull(latestStatic, latestPattern, latestShape).size
+                                val globalScore = if (currentModulesPlayed > 0) {
+                                    ((staticScore + patternScore + shapeScore) / currentModulesPlayed.toFloat()) * 100
+                                } else 0f
+
+                                val prevModulesPlayed = listOfNotNull(
+                                    prevSession?.staticResults?.maxByOrNull { it.timestamp },
+                                    prevSession?.patternResults?.maxByOrNull { it.timestamp },
+                                    prevSession?.shapeResults?.maxByOrNull { it.timestamp }
+                                ).size
+                                val prevGlobalScore = if (prevModulesPlayed > 0) {
+                                    ((prevStaticScore + prevPatternScore + prevShapeScore) / prevModulesPlayed.toFloat()) * 100
+                                } else 0f
+
+                                val displayPosture = latestStatic?.gameMode ?: latestPattern?.gameMode ?: latestShape?.gameMode
+                                val displayLevel = latestStatic?.level ?: latestPattern?.level ?: latestShape?.level
+
+                                Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+                                    Row(modifier = Modifier.clickable { selectedGroupedSession = null }.padding(bottom = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = primaryColor)
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Text("Back to Visits", color = primaryColor, fontWeight = FontWeight.Bold)
+                                    }
+
+                                    SessionSummaryBanner(dateString = fullDateFormatter.format(session.timestamp), posture = displayPosture, level = displayLevel)
+
+                                    if (session.staticResults.isNotEmpty() || session.patternResults.isNotEmpty() || session.shapeResults.isNotEmpty()) {
+                                        Text("Session Clinical Report", fontWeight = FontWeight.Bold, color = primaryColor, fontSize = 18.sp, modifier = Modifier.padding(bottom = 12.dp))
 
                                         ClinicalComparisonCard(
-                                            title = "FRST Composite Stability Score",
+                                            title = "BPro Composite Stability Score",
                                             currentValue = globalScore,
-                                            previousValue = prevGlobalScore,
+                                            previousValue = if (prevSession != null) prevGlobalScore else null,
                                             unit = "/ 100",
                                             isLowerBetter = false,
                                             primaryColor = primaryColor
                                         )
+                                        InfoSection("Calculated by taking the weighted average of your performance across all training modules played in this session. A higher score indicates better overall stability.")
 
                                         ClinicalComparisonCard(
-                                            title = "Combined Fall Risk (Total Incidents)",
-                                            currentValue = currentFalls.toFloat(),
-                                            previousValue = prevFalls.toFloat(),
+                                            title = "Total Session Falls",
+                                            currentValue = session.totalFalls.toFloat(),
+                                            previousValue = prevSession?.totalFalls?.toFloat(),
                                             unit = "Falls",
                                             isLowerBetter = true,
                                             primaryColor = Color(0xFFE53935)
@@ -282,11 +441,12 @@ fun GraphViewScreen(
                                         ) {
                                             Column(modifier = Modifier.padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                                                 Text("Functional Domains Profile", fontWeight = FontWeight.Bold, color = Color.DarkGray, fontSize = 16.sp)
+                                                Text("Visual representation of your strengths and areas for improvement across different training modalities.", fontSize = 12.sp, color = Color.Gray, textAlign = TextAlign.Center, modifier = Modifier.padding(top = 4.dp))
                                                 Spacer(modifier = Modifier.height(16.dp))
                                                 Box(modifier = Modifier.fillMaxWidth().aspectRatio(1f).padding(16.dp), contentAlignment = Alignment.Center) {
                                                     ClinicalRadarChart(
-                                                        currentScores = listOf(staticScore, patternScore, shapeScore.coerceAtMost(1f)),
-                                                        prevScores = listOf(prevStaticScore, prevPatternScore, prevShapeScore.coerceAtMost(1f)),
+                                                        currentScores = listOf(staticScore, patternScore, shapeScore),
+                                                        prevScores = listOf(prevStaticScore, prevPatternScore, prevShapeScore),
                                                         labels = listOf("Static Endurance", "Kinematic Control", "Reactive Agility"),
                                                         primaryColor = primaryColor
                                                     )
@@ -301,7 +461,7 @@ fun GraphViewScreen(
                                         ) {
                                             Column(modifier = Modifier.padding(16.dp)) {
                                                 Text("Combined Biomechanical Sway Profile", fontWeight = FontWeight.Bold, color = Color.DarkGray, fontSize = 16.sp)
-                                                Text("Overlay of Patient's Center of Mass across all recent training modules.", fontSize = 12.sp, color = Color.Gray)
+                                                Text("Visualizes your center of mass movement. A tighter cluster indicates better balance and real-world postural control.", fontSize = 12.sp, color = Color.Gray)
                                                 Spacer(modifier = Modifier.height(16.dp))
 
                                                 Box(modifier = Modifier.fillMaxWidth().aspectRatio(1f).background(Color(0xFFFAFAFA), RoundedCornerShape(8.dp)), contentAlignment = Alignment.Center) {
@@ -315,1125 +475,1687 @@ fun GraphViewScreen(
                                                 }
                                             }
                                         }
+
+                                        // Render Training Scores for Click-through
+                                        Text("Clinical Modules", fontWeight = FontWeight.Bold, color = primaryColor, fontSize = 18.sp, modifier = Modifier.padding(top = 8.dp, bottom = 12.dp))
+
+                                        session.staticResults.forEach { res ->
+                                            GameMiniCard(title = "Static Balance", scoreText = "${res.efficiencyPercentage}%", subText = "Falls: ${res.fallCount}", onClick = {
+                                                clearDetailedSessions()
+                                                selectedMode = "Training"
+                                                selectedGame = "Static Balance"
+                                                selectedStaticSession = res
+                                            })
+                                        }
+                                        session.patternResults.forEach { res ->
+                                            GameMiniCard(title = "Pattern Drawing", scoreText = "${res.targetsHit}/${res.totalTargets}", subText = "Falls: ${res.fallCount}", onClick = {
+                                                clearDetailedSessions()
+                                                selectedMode = "Training"
+                                                selectedGame = "Pattern Drawing"
+                                                selectedPatternSession = res
+                                            })
+                                        }
+                                        session.shapeResults.forEach { res ->
+                                            GameMiniCard(title = "Shape Training", scoreText = "${res.score} pts", subText = "Falls: ${res.fallCount}", onClick = {
+                                                clearDetailedSessions()
+                                                selectedMode = "Training"
+                                                selectedGame = "Shape Training"
+                                                selectedShapeSession = res
+                                            })
+                                        }
+                                    }
+
+                                    // Render Gamified Scores for Click-through
+                                    if (session.colorSorterResults.isNotEmpty() || session.ratPuzzleResults.isNotEmpty() || session.starshipResults.isNotEmpty() || session.holePuzzleResults.isNotEmpty() || session.stepGameResults.isNotEmpty()) {
+                                        Text("Gamification Results", fontWeight = FontWeight.Bold, color = primaryColor, fontSize = 18.sp, modifier = Modifier.padding(top = 8.dp, bottom = 12.dp))
+
+                                        session.colorSorterResults.forEach { res ->
+                                            GameMiniCard(title = "Color Sorter", scoreText = "${res.score} pts", subText = "Missed: ${res.missedCount}", onClick = {
+                                                clearDetailedSessions()
+                                                selectedMode = "Game"
+                                                selectedGame = "Color Sorter"
+                                                selectedColorSorterSession = res
+                                            })
+                                        }
+                                        session.ratPuzzleResults.forEach { res ->
+                                            GameMiniCard(title = "Maze Balance", scoreText = if(res.isWin) "Solved" else "Failed", subText = "Time: ${res.timeTakenMs/1000}s", isSuccess = res.isWin, onClick = {
+                                                clearDetailedSessions()
+                                                selectedMode = "Game"
+                                                selectedGame = "Rat Puzzle"
+                                                selectedRatSession = res
+                                            })
+                                        }
+                                        session.starshipResults.forEach { res ->
+                                            GameMiniCard(title = "Starship Defender", scoreText = "${res.score} pts", subText = "Survived: ${res.timeSurvivedMs/1000}s", onClick = {
+                                                clearDetailedSessions()
+                                                selectedMode = "Game"
+                                                selectedGame = "Starship Defender"
+                                                selectedStarshipSession = res
+                                            })
+                                        }
+                                        session.holePuzzleResults.forEach { res ->
+                                            GameMiniCard(title = "Hole Navigator", scoreText = "${res.score} pts", subText = "Dodged: ${res.holesDodged}", onClick = {
+                                                clearDetailedSessions()
+                                                selectedMode = "Game"
+                                                selectedGame = "Hole Navigator"
+                                                selectedHoleSession = res
+                                            })
+                                        }
+                                        session.stepGameResults.forEach { res ->
+                                            GameMiniCard(title = "Cognitive Stepping", scoreText = "${res.score} pts", subText = "Hits: ${res.correctHits} / Misses: ${res.incorrectHits}", onClick = {
+                                                clearDetailedSessions()
+                                                selectedMode = "Game"
+                                                selectedGame = "Step Game"
+                                                selectedStepSession = res
+                                            })
+                                        }
                                     }
                                 }
                             }
-
+                        } else {
                             // ==========================================
-                            // STATIC BALANCE LOGIC
+                            // EXISTING MODULE-SPECIFIC LOGIC
                             // ==========================================
-                            "Static Balance" -> {
-                                if (staticBalanceResults.isEmpty()) {
-                                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                                        Text("No data available yet.", color = Color.Gray)
-                                    }
-                                } else if (selectedStaticSession == null) {
-                                    Column(modifier = Modifier.fillMaxSize()) {
-                                        Text("Select a Session to View Graphs", fontWeight = FontWeight.Bold, color = primaryColor, fontSize = 18.sp, modifier = Modifier.padding(bottom = 16.dp))
+                            when (selectedGame) {
+                                // ==========================================
+                                // OVERVIEW DASHBOARD LOGIC (TRAINING OR GAME)
+                                // ==========================================
+                                "Overview Dashboard" -> {
+                                    if (selectedMode == "Training") {
+                                        val trainingSessions = groupedSessions.filter {
+                                            it.staticResults.isNotEmpty() || it.patternResults.isNotEmpty() || it.shapeResults.isNotEmpty()
+                                        }
 
-                                        LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                                            items(staticBalanceResults.sortedByDescending { it.timestamp }) { session ->
-                                                val dateFormat = SimpleDateFormat("MMM dd, yyyy - hh:mm a", Locale.getDefault())
-                                                val dateString = dateFormat.format(session.timestamp)
+                                        if (trainingSessions.isEmpty()) {
+                                            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                                Text("No training data available yet to generate a report.", color = Color.Gray)
+                                            }
+                                        } else if (selectedOverviewSession == null) {
+                                            // Enhanced List View with Summary
+                                            Column(modifier = Modifier.fillMaxSize()) {
+                                                Text("Training Overview", fontWeight = FontWeight.Bold, color = primaryColor, fontSize = 20.sp, modifier = Modifier.padding(bottom = 8.dp))
+
+                                                // Calculate Summaries
+                                                val totalTrainingSessions = trainingSessions.size
+                                                val totalTrainingTimeSecs = trainingSessions.sumOf { s ->
+                                                    s.staticResults.sumOf { it.totalTimeMs } +
+                                                            s.patternResults.sumOf { it.timeTakenMs } +
+                                                            s.shapeResults.sumOf { it.timeTakenMs }
+                                                } / 1000f
+
+                                                val avgScores = trainingSessions.mapNotNull { session ->
+                                                    val latestStatic = session.staticResults.maxByOrNull { it.timestamp }
+                                                    val latestPattern = session.patternResults.maxByOrNull { it.timestamp }
+                                                    val latestShape = session.shapeResults.maxByOrNull { it.timestamp }
+
+                                                    val staticScore = ((latestStatic?.efficiencyPercentage?.toFloat() ?: 0f) / 100f * calculateClinicalWeight(latestStatic?.gameMode, latestStatic?.level)).coerceAtMost(1f)
+                                                    val patternScore = (if (latestPattern != null && latestPattern.totalTargets > 0) (latestPattern.targetsHit.toFloat() / latestPattern.totalTargets) else 0f * calculateClinicalWeight(latestPattern?.gameMode, latestPattern?.level)).coerceAtMost(1f)
+                                                    val shapeScore = ((latestShape?.score?.toFloat() ?: 0f) / 10f * calculateClinicalWeight(latestShape?.gameMode, latestShape?.level)).coerceAtMost(1f)
+
+                                                    val mods = listOfNotNull(latestStatic, latestPattern, latestShape).size
+                                                    if (mods > 0) ((staticScore + patternScore + shapeScore) / mods.toFloat()) * 100 else null
+                                                }
+                                                val overallAvgScore = if (avgScores.isNotEmpty()) avgScores.average() else 0.0
+
+                                                // Trend analysis
+                                                val trendText = if(avgScores.size > 1) {
+                                                    val latest = avgScores.first()
+                                                    val previous = avgScores[1]
+                                                    if(latest > previous) "📈 Improving" else if(latest < previous) "📉 Declining" else "➡️ Stable"
+                                                } else "➡️ Baseline"
 
                                                 Card(
-                                                    modifier = Modifier.fillMaxWidth().clickable { selectedStaticSession = session },
-                                                    colors = CardDefaults.cardColors(containerColor = Color(0xFFF0F4F8)),
+                                                    modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp),
+                                                    colors = CardDefaults.cardColors(containerColor = Color(0xFFF3E5F5)),
                                                     elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
                                                 ) {
-                                                    Row(
-                                                        modifier = Modifier.padding(16.dp).fillMaxWidth(),
-                                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                                        verticalAlignment = Alignment.CenterVertically
+                                                    Column(modifier = Modifier.padding(16.dp)) {
+                                                        Text("All-Time Training Metrics", fontWeight = FontWeight.Bold, color = Color(0xFF6A1B9A), fontSize = 16.sp, modifier = Modifier.padding(bottom = 12.dp))
+                                                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                                            StatBox("Sessions", "$totalTrainingSessions", Color.DarkGray)
+                                                            StatBox("Total Time", "${totalTrainingTimeSecs.toInt()}s", Color.DarkGray)
+                                                            StatBox("Avg Score", "${overallAvgScore.toInt()}/100", primaryColor)
+                                                        }
+                                                        Spacer(modifier = Modifier.height(12.dp))
+                                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                                            Text("Performance Trend: ", color = Color.Gray, fontSize = 12.sp)
+                                                            Text(trendText, fontWeight = FontWeight.Bold, color = primaryColor, fontSize = 14.sp)
+                                                        }
+                                                        Text("Score represents the BPro Composite Stability average.", fontSize = 10.sp, color = Color.Gray, modifier = Modifier.padding(top = 4.dp))
+                                                    }
+                                                }
+
+                                                Text("Select a Training Session", fontWeight = FontWeight.Bold, color = Color.DarkGray, fontSize = 16.sp, modifier = Modifier.padding(bottom = 12.dp))
+
+                                                LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                                                    items(trainingSessions) { session ->
+                                                        Card(
+                                                            modifier = Modifier.fillMaxWidth().clickable { selectedOverviewSession = session },
+                                                            colors = CardDefaults.cardColors(containerColor = Color(0xFFF0F4F8)),
+                                                            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+                                                        ) {
+                                                            Row(
+                                                                modifier = Modifier.padding(16.dp).fillMaxWidth(),
+                                                                horizontalArrangement = Arrangement.SpaceBetween,
+                                                                verticalAlignment = Alignment.CenterVertically
+                                                            ) {
+                                                                Column {
+                                                                    Text(text = fullDateFormatter.format(session.timestamp), fontWeight = FontWeight.Bold, fontSize = 16.sp, color = Color.Black)
+
+                                                                    val moduleCount = (if(session.staticResults.isNotEmpty()) 1 else 0) +
+                                                                            (if(session.patternResults.isNotEmpty()) 1 else 0) +
+                                                                            (if(session.shapeResults.isNotEmpty()) 1 else 0)
+                                                                    Text(text = "$moduleCount Training Modules Played", fontSize = 14.sp, color = Color.DarkGray)
+                                                                }
+                                                                Icon(Icons.Default.ArrowForward, contentDescription = "View Report", tint = primaryColor)
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        } else {
+                                            val session = selectedOverviewSession!!
+
+                                            val sortedAsc = trainingSessions.sortedBy { it.timestamp }
+                                            val currentIndex = sortedAsc.indexOf(session)
+                                            val prevSession = if (currentIndex > 0) sortedAsc[currentIndex - 1] else null
+
+                                            val latestStatic = session.staticResults.maxByOrNull { it.timestamp }
+                                            val latestPattern = session.patternResults.maxByOrNull { it.timestamp }
+                                            val latestShape = session.shapeResults.maxByOrNull { it.timestamp }
+
+                                            val currentFalls = (latestStatic?.fallCount ?: 0) + (latestPattern?.fallCount ?: 0) + (latestShape?.fallCount ?: 0)
+                                            val prevFalls = (prevSession?.staticResults?.maxByOrNull { it.timestamp }?.fallCount ?: 0) +
+                                                    (prevSession?.patternResults?.maxByOrNull { it.timestamp }?.fallCount ?: 0) +
+                                                    (prevSession?.shapeResults?.maxByOrNull { it.timestamp }?.fallCount ?: 0)
+
+                                            // 1. Calculate Raw Percentages
+                                            val rawStatic = (latestStatic?.efficiencyPercentage?.toFloat() ?: 0f) / 100f
+                                            val rawPattern = if (latestPattern != null && latestPattern.totalTargets > 0) (latestPattern.targetsHit.toFloat() / latestPattern.totalTargets) else 0f
+                                            val rawShape = (latestShape?.score?.toFloat() ?: 0f) / 10f
+
+                                            val prevRawStatic = (prevSession?.staticResults?.maxByOrNull { it.timestamp }?.efficiencyPercentage?.toFloat() ?: 0f) / 100f
+                                            val prevRawPattern = prevSession?.patternResults?.maxByOrNull { it.timestamp }?.let { if (it.totalTargets > 0) it.targetsHit.toFloat() / it.totalTargets else 0f } ?: 0f
+                                            val prevRawShape = (prevSession?.shapeResults?.maxByOrNull { it.timestamp }?.score?.toFloat() ?: 0f) / 10f
+
+                                            // 2. Apply Weighted Multiplier and Cap at 100%
+                                            val staticScore = (rawStatic * calculateClinicalWeight(latestStatic?.gameMode, latestStatic?.level)).coerceAtMost(1f)
+                                            val patternScore = (rawPattern * calculateClinicalWeight(latestPattern?.gameMode, latestPattern?.level)).coerceAtMost(1f)
+                                            val shapeScore = (rawShape * calculateClinicalWeight(latestShape?.gameMode, latestShape?.level)).coerceAtMost(1f)
+
+                                            val prevStaticScore = (prevRawStatic * calculateClinicalWeight(prevSession?.staticResults?.maxByOrNull { it.timestamp }?.gameMode, prevSession?.staticResults?.maxByOrNull { it.timestamp }?.level)).coerceAtMost(1f)
+                                            val prevPatternScore = (prevRawPattern * calculateClinicalWeight(prevSession?.patternResults?.maxByOrNull { it.timestamp }?.gameMode, prevSession?.patternResults?.maxByOrNull { it.timestamp }?.level)).coerceAtMost(1f)
+                                            val prevShapeScore = (prevRawShape * calculateClinicalWeight(prevSession?.shapeResults?.maxByOrNull { it.timestamp }?.gameMode, prevSession?.shapeResults?.maxByOrNull { it.timestamp }?.level)).coerceAtMost(1f)
+
+                                            // 3. Dynamic Averaging
+                                            val currentModulesPlayed = listOfNotNull(latestStatic, latestPattern, latestShape).size
+                                            val globalScore = if (currentModulesPlayed > 0) {
+                                                ((staticScore + patternScore + shapeScore) / currentModulesPlayed.toFloat()) * 100
+                                            } else 0f
+
+                                            val prevModulesPlayed = listOfNotNull(
+                                                prevSession?.staticResults?.maxByOrNull { it.timestamp },
+                                                prevSession?.patternResults?.maxByOrNull { it.timestamp },
+                                                prevSession?.shapeResults?.maxByOrNull { it.timestamp }
+                                            ).size
+                                            val prevGlobalScore = if (prevModulesPlayed > 0) {
+                                                ((prevStaticScore + prevPatternScore + prevShapeScore) / prevModulesPlayed.toFloat()) * 100
+                                            } else 0f
+
+                                            val displayPosture = latestStatic?.gameMode ?: latestPattern?.gameMode ?: latestShape?.gameMode
+                                            val displayLevel = latestStatic?.level ?: latestPattern?.level ?: latestShape?.level
+
+                                            Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+                                                Row(modifier = Modifier.clickable { selectedOverviewSession = null }.padding(bottom = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                                                    Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = primaryColor)
+                                                    Spacer(modifier = Modifier.width(8.dp))
+                                                    Text("Back to Sessions", color = primaryColor, fontWeight = FontWeight.Bold)
+                                                }
+
+                                                SessionSummaryBanner(dateString = fullDateFormatter.format(session.timestamp), posture = displayPosture, level = displayLevel)
+
+                                                Text("Global Stability Report", fontWeight = FontWeight.Bold, color = primaryColor, fontSize = 20.sp, modifier = Modifier.padding(bottom = 16.dp))
+
+                                                ClinicalComparisonCard(
+                                                    title = "BPro Composite Stability Score",
+                                                    currentValue = globalScore,
+                                                    previousValue = if (prevSession != null) prevGlobalScore else null,
+                                                    unit = "/ 100",
+                                                    isLowerBetter = false,
+                                                    primaryColor = primaryColor
+                                                )
+                                                InfoSection("Calculated by taking the weighted average of your performance across all training modules played in this session. A higher score indicates better overall stability.")
+
+                                                ClinicalComparisonCard(
+                                                    title = "Combined Fall Risk (Total Incidents)",
+                                                    currentValue = currentFalls.toFloat(),
+                                                    previousValue = if (prevSession != null) prevFalls.toFloat() else null,
+                                                    unit = "Falls",
+                                                    isLowerBetter = true,
+                                                    primaryColor = Color(0xFFE53935)
+                                                )
+
+                                                Card(
+                                                    modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp),
+                                                    colors = CardDefaults.cardColors(containerColor = Color.White),
+                                                    elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+                                                ) {
+                                                    Column(modifier = Modifier.padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                                                        Text("Functional Domains Profile", fontWeight = FontWeight.Bold, color = Color.DarkGray, fontSize = 16.sp)
+                                                        Text("Visual representation of your strengths and areas for improvement across different training modalities.", fontSize = 12.sp, color = Color.Gray, textAlign = TextAlign.Center, modifier = Modifier.padding(top = 4.dp))
+                                                        Spacer(modifier = Modifier.height(16.dp))
+                                                        Box(modifier = Modifier.fillMaxWidth().aspectRatio(1f).padding(16.dp), contentAlignment = Alignment.Center) {
+                                                            ClinicalRadarChart(
+                                                                currentScores = listOf(staticScore, patternScore, shapeScore),
+                                                                prevScores = listOf(prevStaticScore, prevPatternScore, prevShapeScore),
+                                                                labels = listOf("Static Endurance", "Kinematic Control", "Reactive Agility"),
+                                                                primaryColor = primaryColor
+                                                            )
+                                                        }
+                                                    }
+                                                }
+
+                                                Card(
+                                                    modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp),
+                                                    colors = CardDefaults.cardColors(containerColor = Color.White),
+                                                    elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+                                                ) {
+                                                    Column(modifier = Modifier.padding(16.dp)) {
+                                                        Text("Combined Biomechanical Sway Profile", fontWeight = FontWeight.Bold, color = Color.DarkGray, fontSize = 16.sp)
+                                                        Text("Visualizes your center of mass movement. A tighter cluster indicates better balance and real-world postural control.", fontSize = 12.sp, color = Color.Gray)
+                                                        Spacer(modifier = Modifier.height(16.dp))
+
+                                                        Box(modifier = Modifier.fillMaxWidth().aspectRatio(1f).background(Color(0xFFFAFAFA), RoundedCornerShape(8.dp)), contentAlignment = Alignment.Center) {
+                                                            CombinedHeatmap(latestStatic, latestPattern, latestShape)
+                                                        }
+
+                                                        Row(modifier = Modifier.fillMaxWidth().padding(top = 16.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
+                                                            HeatmapLegendItem("Static", Color(0xFF188B97))
+                                                            HeatmapLegendItem("Pattern", Color(0xFF4CAF50))
+                                                            HeatmapLegendItem("Shape", Color(0xFFE53935))
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    } else if (selectedMode == "Game") {
+                                        val gameSessions = groupedSessions.filter {
+                                            it.colorSorterResults.isNotEmpty() || it.ratPuzzleResults.isNotEmpty() ||
+                                                    it.starshipResults.isNotEmpty() || it.holePuzzleResults.isNotEmpty() ||
+                                                    it.stepGameResults.isNotEmpty()
+                                        }
+
+                                        if (gameSessions.isEmpty()) {
+                                            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                                Text("No gamification data available yet to generate a report.", color = Color.Gray)
+                                            }
+                                        } else if (selectedOverviewSession == null) {
+                                            // Enhanced List View with Summary for Games
+                                            Column(modifier = Modifier.fillMaxSize()) {
+                                                Text("Game Overview", fontWeight = FontWeight.Bold, color = primaryColor, fontSize = 20.sp, modifier = Modifier.padding(bottom = 8.dp))
+
+                                                val totalGameSessions = gameSessions.size
+                                                val totalGameTimeSecs = gameSessions.sumOf { s ->
+                                                    s.ratPuzzleResults.sumOf { it.timeTakenMs } +
+                                                            s.starshipResults.sumOf { it.timeSurvivedMs } +
+                                                            s.holePuzzleResults.sumOf { it.timeSurvivedMs }
+                                                } / 1000f
+
+                                                val avgScores = gameSessions.mapNotNull { session ->
+                                                    val latestColor = session.colorSorterResults.maxByOrNull { it.timestamp }
+                                                    val latestRat = session.ratPuzzleResults.maxByOrNull { it.timestamp }
+                                                    val latestStarship = session.starshipResults.maxByOrNull { it.timestamp }
+                                                    val latestHole = session.holePuzzleResults.maxByOrNull { it.timestamp }
+                                                    val latestStep = session.stepGameResults.maxByOrNull { it.timestamp }
+
+                                                    val colorScore = latestColor?.let { ((it.redCollected + it.greenCollected) / 30f).coerceIn(0f, 1f) } ?: 0f
+                                                    val ratScore = latestRat?.let { if (it.isWin) 1f else 0f } ?: 0f
+                                                    val starshipScore = latestStarship?.let { (it.timeSurvivedMs / 60000f).coerceIn(0f, 1f) } ?: 0f
+                                                    val holeScore = latestHole?.let { (it.timeSurvivedMs / 60000f).coerceIn(0f, 1f) } ?: 0f
+                                                    val stepScore = latestStep?.let { val tot = it.correctHits + it.incorrectHits; if (tot > 0) it.correctHits.toFloat() / tot else 0f } ?: 0f
+
+                                                    val gamesPlayed = listOfNotNull(latestColor, latestRat, latestStarship, latestHole, latestStep).size
+                                                    if (gamesPlayed > 0) ((colorScore + ratScore + starshipScore + holeScore + stepScore) / gamesPlayed.toFloat()) * 100 else null
+                                                }
+                                                val overallAvgScore = if (avgScores.isNotEmpty()) avgScores.average() else 0.0
+
+                                                // Trend analysis
+                                                val trendText = if(avgScores.size > 1) {
+                                                    val latest = avgScores.first()
+                                                    val previous = avgScores[1]
+                                                    if(latest > previous) "📈 Improving" else if(latest < previous) "📉 Declining" else "➡️ Stable"
+                                                } else "➡️ Baseline"
+
+                                                Card(
+                                                    modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp),
+                                                    colors = CardDefaults.cardColors(containerColor = Color(0xFFE8EAF6)),
+                                                    elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+                                                ) {
+                                                    Column(modifier = Modifier.padding(16.dp)) {
+                                                        Text("All-Time Gamification Metrics", fontWeight = FontWeight.Bold, color = primaryColor, fontSize = 16.sp, modifier = Modifier.padding(bottom = 12.dp))
+                                                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                                            StatBox("Sessions", "$totalGameSessions", Color.DarkGray)
+                                                            StatBox("Survival Time", "${totalGameTimeSecs.toInt()}s", Color.DarkGray)
+                                                            StatBox("Avg Score", "${overallAvgScore.toInt()}/100", primaryColor)
+                                                        }
+                                                        Spacer(modifier = Modifier.height(12.dp))
+                                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                                            Text("Performance Trend: ", color = Color.Gray, fontSize = 12.sp)
+                                                            Text(trendText, fontWeight = FontWeight.Bold, color = primaryColor, fontSize = 14.sp)
+                                                        }
+                                                        Text("Score represents the Composite Neuro-Motor average.", fontSize = 10.sp, color = Color.Gray, modifier = Modifier.padding(top = 4.dp))
+                                                    }
+                                                }
+
+                                                Text("Select a Game Session", fontWeight = FontWeight.Bold, color = Color.DarkGray, fontSize = 16.sp, modifier = Modifier.padding(bottom = 12.dp))
+
+                                                LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                                                    items(gameSessions) { session ->
+                                                        Card(
+                                                            modifier = Modifier.fillMaxWidth().clickable { selectedOverviewSession = session },
+                                                            colors = CardDefaults.cardColors(containerColor = Color(0xFFF0F4F8)),
+                                                            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+                                                        ) {
+                                                            Row(
+                                                                modifier = Modifier.padding(16.dp).fillMaxWidth(),
+                                                                horizontalArrangement = Arrangement.SpaceBetween,
+                                                                verticalAlignment = Alignment.CenterVertically
+                                                            ) {
+                                                                Column {
+                                                                    Text(text = fullDateFormatter.format(session.timestamp), fontWeight = FontWeight.Bold, fontSize = 16.sp, color = Color.Black)
+
+                                                                    val moduleCount = session.colorSorterResults.size + session.ratPuzzleResults.size +
+                                                                            session.starshipResults.size + session.holePuzzleResults.size +
+                                                                            session.stepGameResults.size
+                                                                    Text(text = "$moduleCount Game Modules Played", fontSize = 14.sp, color = Color.DarkGray)
+                                                                }
+                                                                Icon(Icons.Default.ArrowForward, contentDescription = "View Report", tint = primaryColor)
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        } else {
+                                            val session = selectedOverviewSession!!
+                                            val sortedAsc = gameSessions.sortedBy { it.timestamp }
+                                            val currentIndex = sortedAsc.indexOf(session)
+                                            val prevSession = if (currentIndex > 0) sortedAsc[currentIndex - 1] else null
+
+                                            val latestColor = session.colorSorterResults.maxByOrNull { it.timestamp }
+                                            val latestRat = session.ratPuzzleResults.maxByOrNull { it.timestamp }
+                                            val latestStarship = session.starshipResults.maxByOrNull { it.timestamp }
+                                            val latestHole = session.holePuzzleResults.maxByOrNull { it.timestamp }
+                                            val latestStep = session.stepGameResults.maxByOrNull { it.timestamp }
+
+                                            val colorScore = latestColor?.let { ((it.redCollected + it.greenCollected) / 30f).coerceIn(0f, 1f) } ?: 0f
+                                            val ratScore = latestRat?.let { if (it.isWin) 1f else 0f } ?: 0f
+                                            val starshipScore = latestStarship?.let { (it.timeSurvivedMs / 60000f).coerceIn(0f, 1f) } ?: 0f
+                                            val holeScore = latestHole?.let { (it.timeSurvivedMs / 60000f).coerceIn(0f, 1f) } ?: 0f
+                                            val stepScore = latestStep?.let { val tot = it.correctHits + it.incorrectHits; if (tot > 0) it.correctHits.toFloat() / tot else 0f } ?: 0f
+
+                                            val gamesPlayed = listOfNotNull(latestColor, latestRat, latestStarship, latestHole, latestStep).size
+                                            val globalGameScore = if (gamesPlayed > 0) {
+                                                ((colorScore + ratScore + starshipScore + holeScore + stepScore) / gamesPlayed.toFloat()) * 100
+                                            } else 0f
+
+                                            val prevColorScore = prevSession?.colorSorterResults?.maxByOrNull { it.timestamp }?.let { ((it.redCollected + it.greenCollected) / 30f).coerceIn(0f, 1f) } ?: 0f
+                                            val prevRatScore = prevSession?.ratPuzzleResults?.maxByOrNull { it.timestamp }?.let { if (it.isWin) 1f else 0f } ?: 0f
+                                            val prevStarshipScore = prevSession?.starshipResults?.maxByOrNull { it.timestamp }?.let { (it.timeSurvivedMs / 60000f).coerceIn(0f, 1f) } ?: 0f
+                                            val prevHoleScore = prevSession?.holePuzzleResults?.maxByOrNull { it.timestamp }?.let { (it.timeSurvivedMs / 60000f).coerceIn(0f, 1f) } ?: 0f
+                                            val prevStepScore = prevSession?.stepGameResults?.maxByOrNull { it.timestamp }?.let { val tot = it.correctHits + it.incorrectHits; if (tot > 0) it.correctHits.toFloat() / tot else 0f } ?: 0f
+
+                                            val prevGamesPlayed = listOfNotNull(
+                                                prevSession?.colorSorterResults?.maxByOrNull { it.timestamp },
+                                                prevSession?.ratPuzzleResults?.maxByOrNull { it.timestamp },
+                                                prevSession?.starshipResults?.maxByOrNull { it.timestamp },
+                                                prevSession?.holePuzzleResults?.maxByOrNull { it.timestamp },
+                                                prevSession?.stepGameResults?.maxByOrNull { it.timestamp }
+                                            ).size
+                                            val prevGlobalGameScore = if (prevGamesPlayed > 0) {
+                                                ((prevColorScore + prevRatScore + prevStarshipScore + prevHoleScore + prevStepScore) / prevGamesPlayed.toFloat()) * 100
+                                            } else 0f
+
+                                            val currentSurvival = (latestStarship?.timeSurvivedMs ?: 0L) + (latestHole?.timeSurvivedMs ?: 0L) + (latestRat?.timeTakenMs ?: 0L)
+                                            val prevSurvival = (prevSession?.starshipResults?.maxByOrNull { it.timestamp }?.timeSurvivedMs ?: 0L) +
+                                                    (prevSession?.holePuzzleResults?.maxByOrNull { it.timestamp }?.timeSurvivedMs ?: 0L) +
+                                                    (prevSession?.ratPuzzleResults?.maxByOrNull { it.timestamp }?.timeTakenMs ?: 0L)
+
+                                            Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+                                                Row(modifier = Modifier.clickable { selectedOverviewSession = null }.padding(bottom = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                                                    Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = primaryColor)
+                                                    Spacer(modifier = Modifier.width(8.dp))
+                                                    Text("Back to Sessions", color = primaryColor, fontWeight = FontWeight.Bold)
+                                                }
+
+                                                SessionSummaryBanner(dateString = fullDateFormatter.format(session.timestamp), posture = null, level = null)
+
+                                                Text("Neuro-Motor Cognitive Report", fontWeight = FontWeight.Bold, color = primaryColor, fontSize = 20.sp, modifier = Modifier.padding(bottom = 16.dp))
+
+                                                ClinicalComparisonCard(
+                                                    title = "Composite Neuro-Motor Score",
+                                                    currentValue = globalGameScore,
+                                                    previousValue = if (prevSession != null) prevGlobalGameScore else null,
+                                                    unit = "/ 100",
+                                                    isLowerBetter = false,
+                                                    primaryColor = primaryColor
+                                                )
+                                                InfoSection("Calculated by aggregating your normalized performance across all games. It measures cognitive processing, reaction speed, and dynamic endurance.")
+
+                                                ClinicalComparisonCard(
+                                                    title = "Total Survival & Completion Time",
+                                                    currentValue = currentSurvival / 1000f,
+                                                    previousValue = if (prevSession != null) prevSurvival / 1000f else null,
+                                                    unit = "Sec",
+                                                    isLowerBetter = false,
+                                                    primaryColor = Color(0xFF4CAF50)
+                                                )
+
+                                                Card(
+                                                    modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp),
+                                                    colors = CardDefaults.cardColors(containerColor = Color.White),
+                                                    elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+                                                ) {
+                                                    Column(modifier = Modifier.padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                                                        Text("Cognitive & Reflex Domains", fontWeight = FontWeight.Bold, color = Color.DarkGray, fontSize = 16.sp)
+                                                        Text("Cognitive abilities (memory, attention, decision-making) and Reflex performance (reaction time, responsiveness to visual stimuli).", fontSize = 12.sp, color = Color.Gray, textAlign = TextAlign.Center, modifier = Modifier.padding(top = 4.dp))
+                                                        Spacer(modifier = Modifier.height(16.dp))
+                                                        Box(modifier = Modifier.fillMaxWidth().aspectRatio(1f).padding(16.dp), contentAlignment = Alignment.Center) {
+                                                            ClinicalRadarChart(
+                                                                currentScores = listOf(colorScore, ratScore, starshipScore, holeScore, stepScore),
+                                                                prevScores = listOf(prevColorScore, prevRatScore, prevStarshipScore, prevHoleScore, prevStepScore),
+                                                                labels = listOf("Reactive Speed", "Motor Precision", "Targeting", "Dynamic Endurance", "Processing"),
+                                                                primaryColor = primaryColor
+                                                            )
+                                                        }
+                                                    }
+                                                }
+
+                                                Text("Gamification Results", fontWeight = FontWeight.Bold, color = primaryColor, fontSize = 18.sp, modifier = Modifier.padding(top = 8.dp, bottom = 12.dp))
+
+                                                session.colorSorterResults.forEach { res ->
+                                                    GameMiniCard(title = "Color Sorter", scoreText = "${res.score} pts", subText = "Missed: ${res.missedCount}", onClick = {
+                                                        clearDetailedSessions()
+                                                        selectedGame = "Color Sorter"
+                                                        selectedColorSorterSession = res
+                                                    })
+                                                }
+                                                session.ratPuzzleResults.forEach { res ->
+                                                    GameMiniCard(title = "Maze Balance", scoreText = if(res.isWin) "Solved" else "Failed", subText = "Time: ${res.timeTakenMs/1000}s", isSuccess = res.isWin, onClick = {
+                                                        clearDetailedSessions()
+                                                        selectedGame = "Rat Puzzle"
+                                                        selectedRatSession = res
+                                                    })
+                                                }
+                                                session.starshipResults.forEach { res ->
+                                                    GameMiniCard(title = "Starship Defender", scoreText = "${res.score} pts", subText = "Survived: ${res.timeSurvivedMs/1000}s", onClick = {
+                                                        clearDetailedSessions()
+                                                        selectedGame = "Starship Defender"
+                                                        selectedStarshipSession = res
+                                                    })
+                                                }
+                                                session.holePuzzleResults.forEach { res ->
+                                                    GameMiniCard(title = "Hole Navigator", scoreText = "${res.score} pts", subText = "Dodged: ${res.holesDodged}", onClick = {
+                                                        clearDetailedSessions()
+                                                        selectedGame = "Hole Navigator"
+                                                        selectedHoleSession = res
+                                                    })
+                                                }
+                                                session.stepGameResults.forEach { res ->
+                                                    GameMiniCard(title = "Cognitive Stepping", scoreText = "${res.score} pts", subText = "Hits: ${res.correctHits} / Misses: ${res.incorrectHits}", onClick = {
+                                                        clearDetailedSessions()
+                                                        selectedGame = "Step Game"
+                                                        selectedStepSession = res
+                                                    })
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // ==========================================
+                                // STATIC BALANCE LOGIC
+                                // ==========================================
+                                "Static Balance" -> {
+                                    if (staticBalanceResults.isEmpty()) {
+                                        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                            Text("No data available yet.", color = Color.Gray)
+                                        }
+                                    } else if (selectedStaticSession == null) {
+                                        Column(modifier = Modifier.fillMaxSize()) {
+                                            Text("Select a Session to View Graphs", fontWeight = FontWeight.Bold, color = primaryColor, fontSize = 18.sp, modifier = Modifier.padding(bottom = 16.dp))
+
+                                            LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                                                items(staticBalanceResults.sortedByDescending { it.timestamp }) { session ->
+                                                    val dateString = fullDateFormatter.format(session.timestamp)
+
+                                                    Card(
+                                                        modifier = Modifier.fillMaxWidth().clickable { selectedStaticSession = session },
+                                                        colors = CardDefaults.cardColors(containerColor = Color(0xFFF0F4F8)),
+                                                        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
                                                     ) {
-                                                        Column {
-                                                            Text(text = dateString, fontWeight = FontWeight.Bold, fontSize = 16.sp, color = Color.Black)
-                                                            Text(
-                                                                text = if (session.gameMode.equals("SITTING", ignoreCase = true)) "Mode: ${session.gameMode}" else "Mode: ${session.gameMode} | Level: ${session.level}",
-                                                                fontSize = 14.sp,
-                                                                color = Color.DarkGray
-                                                            )
+                                                        Row(
+                                                            modifier = Modifier.padding(16.dp).fillMaxWidth(),
+                                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                                            verticalAlignment = Alignment.CenterVertically
+                                                        ) {
+                                                            Column {
+                                                                Text(text = dateString, fontWeight = FontWeight.Bold, fontSize = 16.sp, color = Color.Black)
+                                                                Text(
+                                                                    text = if (session.gameMode.equals("SITTING", ignoreCase = true)) "Mode: ${session.gameMode}" else "Mode: ${session.gameMode} | Level: ${session.level}",
+                                                                    fontSize = 14.sp,
+                                                                    color = Color.DarkGray
+                                                                )
+                                                            }
+                                                            Text(text = "${session.efficiencyPercentage}% Eff.", fontWeight = FontWeight.Bold, color = primaryColor)
                                                         }
-                                                        Text(text = "${session.efficiencyPercentage}% Eff.", fontWeight = FontWeight.Bold, color = primaryColor)
                                                     }
                                                 }
                                             }
                                         }
-                                    }
-                                } else {
-                                    val session = selectedStaticSession!!
-                                    val sorted = staticBalanceResults.sortedBy { it.timestamp }
-                                    val currentIndex = sorted.indexOf(session)
-                                    val prevSession = if (currentIndex > 0) sorted[currentIndex - 1] else null
-                                    val historyWindow = sorted.subList(maxOf(0, currentIndex - 4), currentIndex + 1)
+                                    } else {
+                                        val session = selectedStaticSession!!
+                                        val sorted = staticBalanceResults.sortedBy { it.timestamp }
+                                        val currentIndex = sorted.indexOf(session)
+                                        val prevSession = if (currentIndex > 0) sorted[currentIndex - 1] else null
+                                        val historyWindow = sorted.subList(maxOf(0, currentIndex - 4), currentIndex + 1)
 
-                                    val recentData = historyWindow.mapIndexed { index, it ->
-                                        val label = if (index == historyWindow.lastIndex) "Selected" else dateFormatter.format(it.timestamp)
-                                        val value = when(selectedMetric) {
-                                            "Falls" -> it.fallCount.toFloat()
-                                            "Balance Time" -> it.balanceTimeMs / 1000f
-                                            "Avg Fall Error (°)" -> it.fallErrors.takeIf { e -> e.isNotEmpty() }?.average()?.toFloat() ?: 0f
-                                            else -> it.efficiencyPercentage.toFloat()
-                                        }
-                                        ChartData(label, value)
-                                    }
-
-                                    val pb = when(selectedMetric) {
-                                        "Falls" -> sorted.minOfOrNull { it.fallCount.toFloat() } ?: 0f
-                                        "Balance Time" -> sorted.maxOfOrNull { it.balanceTimeMs / 1000f } ?: 0f
-                                        "Avg Fall Error (°)" -> sorted.minOfOrNull { it.fallErrors.takeIf { e -> e.isNotEmpty() }?.average()?.toFloat() ?: 0f } ?: 0f
-                                        else -> sorted.maxOfOrNull { it.efficiencyPercentage.toFloat() } ?: 0f
-                                    }
-                                    val isLowerBetter = selectedMetric == "Falls" || selectedMetric == "Avg Fall Error (°)"
-                                    val dateFormat = SimpleDateFormat("MMM dd, yyyy - hh:mm a", Locale.getDefault())
-                                    val dateString = dateFormat.format(session.timestamp)
-
-                                    Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
-                                        Row(modifier = Modifier.clickable { selectedStaticSession = null }.padding(bottom = 16.dp), verticalAlignment = Alignment.CenterVertically) {
-                                            Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = primaryColor)
-                                            Spacer(modifier = Modifier.width(8.dp))
-                                            Text("Back to Sessions", color = primaryColor, fontWeight = FontWeight.Bold)
+                                        val recentData = historyWindow.mapIndexed { index, it ->
+                                            val label = if (index == historyWindow.lastIndex) "Selected" else dateFormatter.format(it.timestamp)
+                                            val value = when(selectedMetric) {
+                                                "Falls" -> it.fallCount.toFloat()
+                                                "Balance Time" -> it.balanceTimeMs / 1000f
+                                                "Avg Fall Error (°)" -> it.fallErrors.takeIf { e -> e.isNotEmpty() }?.average()?.toFloat() ?: 0f
+                                                else -> it.efficiencyPercentage.toFloat()
+                                            }
+                                            ChartData(label, value)
                                         }
 
-                                        SessionSummaryBanner(dateString = dateString, posture = session.gameMode, level = session.level)
+                                        val pb = when(selectedMetric) {
+                                            "Falls" -> sorted.minOfOrNull { it.fallCount.toFloat() } ?: 0f
+                                            "Balance Time" -> sorted.maxOfOrNull { it.balanceTimeMs / 1000f } ?: 0f
+                                            "Avg Fall Error (°)" -> sorted.minOfOrNull { it.fallErrors.takeIf { e -> e.isNotEmpty() }?.average()?.toFloat() ?: 0f } ?: 0f
+                                            else -> sorted.maxOfOrNull { it.efficiencyPercentage.toFloat() } ?: 0f
+                                        }
+                                        val isLowerBetter = selectedMetric == "Falls" || selectedMetric == "Avg Fall Error (°)"
+                                        val dateString = fullDateFormatter.format(session.timestamp)
 
-                                        MetricSelector(metrics = availableMetrics, selectedMetric = selectedMetric, onMetricSelected = { selectedMetric = it }, primaryColor = primaryColor)
+                                        Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+                                            Row(modifier = Modifier.clickable {
+                                                if(selectedGroupedSession != null) selectedMode = "Session"
+                                                else if(selectedOverviewSession != null) selectedGame = "Overview Dashboard"
+                                                selectedStaticSession = null
+                                            }.padding(bottom = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                                                Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = primaryColor)
+                                                Spacer(modifier = Modifier.width(8.dp))
+                                                Text(if(selectedGroupedSession != null || selectedOverviewSession != null) "Back to Session Report" else "Back to List", color = primaryColor, fontWeight = FontWeight.Bold)
+                                            }
 
-                                        PerformanceDashboard(
-                                            title = "$selectedMetric Progression",
-                                            metrics = recentData,
-                                            personalBest = pb,
-                                            isLowerBetter = isLowerBetter,
-                                            primaryColor = primaryColor
-                                        )
+                                            SessionSummaryBanner(dateString = dateString, posture = session.gameMode, level = session.level)
 
-                                        Spacer(modifier = Modifier.height(16.dp))
+                                            MetricSelector(metrics = availableMetrics, selectedMetric = selectedMetric, onMetricSelected = { selectedMetric = it }, primaryColor = primaryColor)
 
-                                        ClinicalComparisonCard(
-                                            title = "Falls vs Previous Session",
-                                            currentValue = session.fallCount.toFloat(),
-                                            previousValue = prevSession?.fallCount?.toFloat(),
-                                            unit = "Falls",
-                                            isLowerBetter = true,
-                                            primaryColor = primaryColor
-                                        )
+                                            PerformanceDashboard(
+                                                title = "$selectedMetric Progression",
+                                                metrics = recentData,
+                                                personalBest = pb,
+                                                isLowerBetter = isLowerBetter,
+                                                primaryColor = primaryColor
+                                            )
 
-                                        val currentAvgError = if (session.fallErrors.isNotEmpty()) session.fallErrors.average().toFloat() else 0f
-                                        val prevAvgError = if (prevSession?.fallErrors?.isNotEmpty() == true) prevSession.fallErrors.average().toFloat() else null
-                                        ClinicalComparisonCard(
-                                            title = "Avg Fall Error vs Previous",
-                                            currentValue = currentAvgError,
-                                            previousValue = prevAvgError,
-                                            unit = "° (Degrees)",
-                                            isLowerBetter = true,
-                                            primaryColor = primaryColor
-                                        )
+                                            Spacer(modifier = Modifier.height(16.dp))
 
-                                        val baseLimit = if (session.gameMode == "SITTING") 6f else 10f
-                                        ClinicalErrorBarChart(
-                                            title = "Total Sway Angle vs Safe Limit (°)",
-                                            errors = session.fallErrors,
-                                            barLabelPrefix = "F",
-                                            baseLimit = baseLimit
-                                        )
+                                            ClinicalComparisonCard(
+                                                title = "Falls vs Previous Session",
+                                                currentValue = session.fallCount.toFloat(),
+                                                previousValue = prevSession?.fallCount?.toFloat(),
+                                                unit = "Falls",
+                                                isLowerBetter = true,
+                                                primaryColor = primaryColor
+                                            )
 
-                                        Card(
-                                            modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp),
-                                            colors = CardDefaults.cardColors(containerColor = Color.White),
-                                            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
-                                        ) {
-                                            Column(modifier = Modifier.padding(16.dp)) {
-                                                Text("Balance Path & Stats", fontWeight = FontWeight.Bold, color = Color.DarkGray, fontSize = 16.sp)
-                                                Spacer(modifier = Modifier.height(16.dp))
+                                            val currentAvgError = if (session.fallErrors.isNotEmpty()) session.fallErrors.average().toFloat() else 0f
+                                            val prevAvgError = if (prevSession?.fallErrors?.isNotEmpty() == true) prevSession.fallErrors.average().toFloat() else null
+                                            ClinicalComparisonCard(
+                                                title = "Avg Fall Error vs Previous",
+                                                currentValue = currentAvgError,
+                                                previousValue = prevAvgError,
+                                                unit = "° (Degrees)",
+                                                isLowerBetter = true,
+                                                primaryColor = primaryColor
+                                            )
 
-                                                Box(
-                                                    modifier = Modifier
-                                                        .fillMaxWidth()
-                                                        .aspectRatio(1f)
-                                                        .background(Color(0xFFFAFAFA), RoundedCornerShape(8.dp))
-                                                        .padding(16.dp),
-                                                    contentAlignment = Alignment.Center
-                                                ) {
-                                                    Canvas(modifier = Modifier.fillMaxSize()) {
-                                                        val centerX = size.width / 2
-                                                        val centerY = size.height / 2
-                                                        val outerRadius = size.width / 2.8f
+                                            val baseLimit = if (session.gameMode == "SITTING") 6f else 10f
+                                            ClinicalErrorBarChart(
+                                                title = "Total Sway Angle vs Safe Limit (°)",
+                                                errors = session.fallErrors,
+                                                barLabelPrefix = "F",
+                                                baseLimit = baseLimit
+                                            )
 
-                                                        val maxTiltDegrees = if (session.gameMode == "SITTING") 6f else 10f
-                                                        val innerMultiplier = if (session.gameMode == "SITTING") 0.07f else when(session.level) { 1 -> 0.20f; 2 -> 0.30f; else -> 0.40f }
-                                                        val middleMultiplier = if (session.gameMode == "SITTING") 0.40f else when(session.level) { 1 -> 0.50f; 2 -> 0.60f; else -> 0.70f }
+                                            Card(
+                                                modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp),
+                                                colors = CardDefaults.cardColors(containerColor = Color.White),
+                                                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+                                            ) {
+                                                Column(modifier = Modifier.padding(16.dp)) {
+                                                    Text("Balance Path & Stats", fontWeight = FontWeight.Bold, color = Color.DarkGray, fontSize = 16.sp)
+                                                    Spacer(modifier = Modifier.height(16.dp))
 
-                                                        val middleRadius = outerRadius * middleMultiplier
-                                                        val innerRadius = outerRadius * innerMultiplier
+                                                    Box(
+                                                        modifier = Modifier
+                                                            .fillMaxWidth()
+                                                            .aspectRatio(1f)
+                                                            .background(Color(0xFFFAFAFA), RoundedCornerShape(8.dp))
+                                                            .padding(16.dp),
+                                                        contentAlignment = Alignment.Center
+                                                    ) {
+                                                        Canvas(modifier = Modifier.fillMaxSize()) {
+                                                            val centerX = size.width / 2
+                                                            val centerY = size.height / 2
+                                                            val outerRadius = size.width / 2.8f
 
-                                                        val colorOuterBg = Color(0xFFF3D8D9)
-                                                        val colorOuterStroke = Color(0xFFCD5A5F)
-                                                        val colorMiddleBg = Color(0xFFF9D199)
-                                                        val colorTargetGreen = Color(0xFF5CB85C)
-                                                        val colorTeal = Color(0xFF188B97)
+                                                            val maxTiltDegrees = if (session.gameMode == "SITTING") 6f else 10f
+                                                            val innerMultiplier = if (session.gameMode == "SITTING") 0.07f else when(session.level) { 1 -> 0.20f; 2 -> 0.30f; else -> 0.40f }
+                                                            val middleMultiplier = if (session.gameMode == "SITTING") 0.40f else when(session.level) { 1 -> 0.50f; 2 -> 0.60f; else -> 0.70f }
 
-                                                        drawCircle(color = colorOuterBg, radius = outerRadius, center = Offset(centerX, centerY))
-                                                        drawCircle(color = colorOuterStroke, radius = outerRadius, center = Offset(centerX, centerY), style = Stroke(width = 4.dp.toPx()))
-                                                        drawCircle(color = colorMiddleBg, radius = middleRadius, center = Offset(centerX, centerY))
-                                                        drawCircle(color = Color.White, radius = middleRadius, center = Offset(centerX, centerY), style = Stroke(width = 2.dp.toPx()))
-                                                        drawCircle(color = colorTargetGreen.copy(alpha = 0.4f), radius = innerRadius, center = Offset(centerX, centerY))
-                                                        drawCircle(
-                                                            brush = Brush.radialGradient(
-                                                                colors = listOf(colorTargetGreen.copy(alpha = 0.8f), colorTargetGreen.copy(alpha = 0.2f), Color.Transparent),
-                                                                center = Offset(centerX, centerY),
-                                                                radius = innerRadius * 1.2f
-                                                            ),
-                                                            radius = innerRadius * 1.2f,
-                                                            center = Offset(centerX, centerY)
-                                                        )
-                                                        drawCircle(color = Color.White, radius = innerRadius, center = Offset(centerX, centerY), style = Stroke(width = 2.dp.toPx()))
+                                                            val middleRadius = outerRadius * middleMultiplier
+                                                            val innerRadius = outerRadius * innerMultiplier
 
-                                                        val pathEffect = PathEffect.dashPathEffect(floatArrayOf(20f, 20f), 0f)
-                                                        drawLine(color = colorTeal.copy(alpha = 0.3f), start = Offset(centerX - outerRadius, centerY), end = Offset(centerX + outerRadius, centerY), strokeWidth = 3.dp.toPx(), pathEffect = pathEffect)
-                                                        drawLine(color = colorTeal.copy(alpha = 0.3f), start = Offset(centerX, centerY - outerRadius), end = Offset(centerX, centerY + outerRadius), strokeWidth = 3.dp.toPx(), pathEffect = pathEffect)
+                                                            val colorOuterBg = Color(0xFFF3D8D9)
+                                                            val colorOuterStroke = Color(0xFFCD5A5F)
+                                                            val colorMiddleBg = Color(0xFFF9D199)
+                                                            val colorTargetGreen = Color(0xFF5CB85C)
+                                                            val colorTeal = Color(0xFF188B97)
 
-                                                        var lastX = centerX
-                                                        var lastY = centerY
+                                                            drawCircle(color = colorOuterBg, radius = outerRadius, center = Offset(centerX, centerY))
+                                                            drawCircle(color = colorOuterStroke, radius = outerRadius, center = Offset(centerX, centerY), style = Stroke(width = 4.dp.toPx()))
+                                                            drawCircle(color = colorMiddleBg, radius = middleRadius, center = Offset(centerX, centerY))
+                                                            drawCircle(color = Color.White, radius = middleRadius, center = Offset(centerX, centerY), style = Stroke(width = 2.dp.toPx()))
+                                                            drawCircle(color = colorTargetGreen.copy(alpha = 0.4f), radius = innerRadius, center = Offset(centerX, centerY))
+                                                            drawCircle(
+                                                                brush = Brush.radialGradient(
+                                                                    colors = listOf(colorTargetGreen.copy(alpha = 0.8f), colorTargetGreen.copy(alpha = 0.2f), Color.Transparent),
+                                                                    center = Offset(centerX, centerY),
+                                                                    radius = innerRadius * 1.2f
+                                                                ),
+                                                                radius = innerRadius * 1.2f,
+                                                                center = Offset(centerX, centerY)
+                                                            )
+                                                            drawCircle(color = Color.White, radius = innerRadius, center = Offset(centerX, centerY), style = Stroke(width = 2.dp.toPx()))
 
-                                                        if (session.frontalData.isNotEmpty() && session.sagittalData.isNotEmpty()) {
-                                                            val userPath = Path()
-                                                            val sizeToUse = minOf(session.frontalData.size, session.sagittalData.size)
+                                                            val pathEffect = PathEffect.dashPathEffect(floatArrayOf(20f, 20f), 0f)
+                                                            drawLine(color = colorTeal.copy(alpha = 0.3f), start = Offset(centerX - outerRadius, centerY), end = Offset(centerX + outerRadius, centerY), strokeWidth = 3.dp.toPx(), pathEffect = pathEffect)
+                                                            drawLine(color = colorTeal.copy(alpha = 0.3f), start = Offset(centerX, centerY - outerRadius), end = Offset(centerX, centerY + outerRadius), strokeWidth = 3.dp.toPx(), pathEffect = pathEffect)
 
-                                                            for (i in 0 until sizeToUse) {
-                                                                val pitch = session.frontalData[i]
-                                                                val yaw = session.sagittalData[i]
+                                                            var lastX = centerX
+                                                            var lastY = centerY
 
-                                                                val rawDotXOffset = (yaw / maxTiltDegrees) * outerRadius
-                                                                val rawDotYOffset = -(pitch / maxTiltDegrees) * outerRadius
-                                                                val rawDistancePx = sqrt(rawDotXOffset * rawDotXOffset + rawDotYOffset * rawDotYOffset)
-                                                                val scale = if (rawDistancePx > outerRadius) outerRadius / rawDistancePx else 1f
+                                                            if (session.frontalData.isNotEmpty() && session.sagittalData.isNotEmpty()) {
+                                                                val userPath = Path()
+                                                                val sizeToUse = minOf(session.frontalData.size, session.sagittalData.size)
 
-                                                                val pxX = centerX + (rawDotXOffset * scale)
-                                                                val pxY = centerY + (rawDotYOffset * scale)
+                                                                for (i in 0 until sizeToUse) {
+                                                                    val pitch = session.frontalData[i]
+                                                                    val yaw = session.sagittalData[i]
 
-                                                                if (i == 0) userPath.moveTo(pxX, pxY) else userPath.lineTo(pxX, pxY)
+                                                                    val rawDotXOffset = (yaw / maxTiltDegrees) * outerRadius
+                                                                    val rawDotYOffset = -(pitch / maxTiltDegrees) * outerRadius
+                                                                    val rawDistancePx = sqrt(rawDotXOffset * rawDotXOffset + rawDotYOffset * rawDotYOffset)
+                                                                    val scale = if (rawDistancePx > outerRadius) outerRadius / rawDistancePx else 1f
 
-                                                                if (i == sizeToUse - 1) {
-                                                                    lastX = pxX
-                                                                    lastY = pxY
+                                                                    val pxX = centerX + (rawDotXOffset * scale)
+                                                                    val pxY = centerY + (rawDotYOffset * scale)
+
+                                                                    if (i == 0) userPath.moveTo(pxX, pxY) else userPath.lineTo(pxX, pxY)
+
+                                                                    if (i == sizeToUse - 1) {
+                                                                        lastX = pxX
+                                                                        lastY = pxY
+                                                                    }
                                                                 }
+                                                                drawPath(path = userPath, color = colorTeal.copy(alpha = 0.7f), style = Stroke(width = 4.dp.toPx(), join = StrokeJoin.Round))
                                                             }
-                                                            drawPath(path = userPath, color = colorTeal.copy(alpha = 0.7f), style = Stroke(width = 4.dp.toPx(), join = StrokeJoin.Round))
-                                                        }
 
-                                                        val annotationDash = PathEffect.dashPathEffect(floatArrayOf(10f, 10f), 0f)
+                                                            val annotationDash = PathEffect.dashPathEffect(floatArrayOf(10f, 10f), 0f)
 
-                                                        val bpStartX = centerX - outerRadius * 1.15f
-                                                        val bpStartY = centerY - outerRadius * 1.15f
-                                                        drawLine(
-                                                            color = Color.DarkGray,
-                                                            start = Offset(bpStartX, bpStartY),
-                                                            end = Offset(centerX - innerRadius * 0.5f, centerY - innerRadius * 0.5f),
-                                                            strokeWidth = 1.dp.toPx(),
-                                                            pathEffect = annotationDash
-                                                        )
-                                                        drawContext.canvas.nativeCanvas.drawText("Balance Point", bpStartX - 10f, bpStartY + 10f, textPaintLeft)
-
-                                                        val flStartX = centerX + outerRadius * 1.15f
-                                                        val flStartY = centerY - outerRadius * 1.15f
-                                                        drawLine(
-                                                            color = Color.Red.copy(alpha = 0.7f),
-                                                            start = Offset(flStartX, flStartY),
-                                                            end = Offset(centerX + outerRadius * 0.8f, centerY - outerRadius * 0.6f),
-                                                            strokeWidth = 1.dp.toPx(),
-                                                            pathEffect = annotationDash
-                                                        )
-                                                        drawContext.canvas.nativeCanvas.drawText("Fall Limit ($maxTiltDegrees°)", flStartX + 10f, flStartY + 10f, textPaintRight)
-
-                                                        if (session.frontalData.isNotEmpty()) {
-                                                            drawCircle(color = colorTeal, radius = 4.dp.toPx(), center = Offset(lastX, lastY))
-                                                            val spStartX = centerX + outerRadius * 1.15f
-                                                            val spStartY = centerY + outerRadius * 1.15f
+                                                            val bpStartX = centerX - outerRadius * 1.15f
+                                                            val bpStartY = centerY - outerRadius * 1.15f
                                                             drawLine(
-                                                                color = colorTeal,
-                                                                start = Offset(spStartX, spStartY),
-                                                                end = Offset(lastX, lastY),
+                                                                color = Color.DarkGray,
+                                                                start = Offset(bpStartX, bpStartY),
+                                                                end = Offset(centerX - innerRadius * 0.5f, centerY - innerRadius * 0.5f),
                                                                 strokeWidth = 1.dp.toPx(),
                                                                 pathEffect = annotationDash
                                                             )
-                                                            drawContext.canvas.nativeCanvas.drawText("Patient Sway", spStartX + 10f, spStartY, textPaintRight)
+                                                            drawContext.canvas.nativeCanvas.drawText("Balance Point", bpStartX - 10f, bpStartY + 10f, textPaintLeft)
+
+                                                            val flStartX = centerX + outerRadius * 1.15f
+                                                            val flStartY = centerY - outerRadius * 1.15f
+                                                            drawLine(
+                                                                color = Color.Red.copy(alpha = 0.7f),
+                                                                start = Offset(flStartX, flStartY),
+                                                                end = Offset(centerX + outerRadius * 0.8f, centerY - outerRadius * 0.6f),
+                                                                strokeWidth = 1.dp.toPx(),
+                                                                pathEffect = annotationDash
+                                                            )
+                                                            drawContext.canvas.nativeCanvas.drawText("Fall Limit ($maxTiltDegrees°)", flStartX + 10f, flStartY + 10f, textPaintRight)
+
+                                                            if (session.frontalData.isNotEmpty()) {
+                                                                drawCircle(color = colorTeal, radius = 4.dp.toPx(), center = Offset(lastX, lastY))
+                                                                val spStartX = centerX + outerRadius * 1.15f
+                                                                val spStartY = centerY + outerRadius * 1.15f
+                                                                drawLine(
+                                                                    color = colorTeal,
+                                                                    start = Offset(spStartX, spStartY),
+                                                                    end = Offset(lastX, lastY),
+                                                                    strokeWidth = 1.dp.toPx(),
+                                                                    pathEffect = annotationDash
+                                                                )
+                                                                drawContext.canvas.nativeCanvas.drawText("Patient Sway", spStartX + 10f, spStartY, textPaintRight)
+                                                            }
                                                         }
                                                     }
-                                                }
 
-                                                Spacer(modifier = Modifier.height(16.dp))
-                                                HorizontalDivider(color = Color.LightGray.copy(alpha = 0.5f))
-                                                Spacer(modifier = Modifier.height(16.dp))
+                                                    Spacer(modifier = Modifier.height(16.dp))
+                                                    HorizontalDivider(color = Color.LightGray.copy(alpha = 0.5f))
+                                                    Spacer(modifier = Modifier.height(16.dp))
 
-                                                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-                                                    StatBox("Total Time", "${String.format(Locale.US, "%.1f", session.totalTimeMs / 1000f)}s", Color.DarkGray)
-                                                    StatBox("Balanced", "${String.format(Locale.US, "%.1f", session.balanceTimeMs / 1000f)}s", Color(0xFF4CAF50))
-                                                    StatBox("Imbalanced", "${String.format(Locale.US, "%.1f", session.imbalanceTimeMs / 1000f)}s", Color(0xFFFF9800))
-                                                    StatBox("Falls", "${session.fallCount}", Color.Red)
+                                                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+                                                        StatBox("Total Time", "${String.format(Locale.US, "%.1f", session.totalTimeMs / 1000f)}s", Color.DarkGray)
+                                                        StatBox("Balanced", "${String.format(Locale.US, "%.1f", session.balanceTimeMs / 1000f)}s", Color(0xFF4CAF50))
+                                                        StatBox("Imbalanced", "${String.format(Locale.US, "%.1f", session.imbalanceTimeMs / 1000f)}s", Color(0xFFFF9800))
+                                                        StatBox("Falls", "${session.fallCount}", Color.Red)
+                                                    }
                                                 }
                                             }
                                         }
                                     }
                                 }
-                            }
 
-                            // ==========================================
-                            // PATTERN DRAWING LOGIC
-                            // ==========================================
-                            "Pattern Drawing" -> {
-                                if (patternDrawingResults.isEmpty()) {
-                                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                                        Text("No data available yet.", color = Color.Gray)
-                                    }
-                                } else if (selectedPatternSession == null) {
-                                    Column(modifier = Modifier.fillMaxSize()) {
-                                        Text("Select a Pattern Session", fontWeight = FontWeight.Bold, color = primaryColor, fontSize = 18.sp, modifier = Modifier.padding(bottom = 16.dp))
-                                        LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                                            items(patternDrawingResults.sortedByDescending { it.timestamp }) { session ->
-                                                val dateString = SimpleDateFormat("MMM dd, yyyy - hh:mm a", Locale.getDefault()).format(session.timestamp)
-                                                Card(
-                                                    modifier = Modifier.fillMaxWidth().clickable { selectedPatternSession = session },
-                                                    colors = CardDefaults.cardColors(containerColor = Color(0xFFF0F4F8)),
-                                                    elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
-                                                ) {
-                                                    Row(modifier = Modifier.padding(16.dp).fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                                                        Column {
-                                                            Text(text = dateString, fontWeight = FontWeight.Bold, fontSize = 16.sp, color = Color.Black)
-                                                            Text(text = "${session.levelName} (${session.gameMode})", fontSize = 14.sp, color = Color.DarkGray)
+                                // ==========================================
+                                // PATTERN DRAWING LOGIC
+                                // ==========================================
+                                "Pattern Drawing" -> {
+                                    if (patternDrawingResults.isEmpty()) {
+                                        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                            Text("No data available yet.", color = Color.Gray)
+                                        }
+                                    } else if (selectedPatternSession == null) {
+                                        Column(modifier = Modifier.fillMaxSize()) {
+                                            Text("Select a Pattern Session", fontWeight = FontWeight.Bold, color = primaryColor, fontSize = 18.sp, modifier = Modifier.padding(bottom = 16.dp))
+                                            LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                                                items(patternDrawingResults.sortedByDescending { it.timestamp }) { session ->
+                                                    val dateString = fullDateFormatter.format(session.timestamp)
+                                                    Card(
+                                                        modifier = Modifier.fillMaxWidth().clickable { selectedPatternSession = session },
+                                                        colors = CardDefaults.cardColors(containerColor = Color(0xFFF0F4F8)),
+                                                        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+                                                    ) {
+                                                        Row(modifier = Modifier.padding(16.dp).fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                                                            Column {
+                                                                Text(text = dateString, fontWeight = FontWeight.Bold, fontSize = 16.sp, color = Color.Black)
+                                                                Text(text = "${session.levelName} (${session.gameMode})", fontSize = 14.sp, color = Color.DarkGray)
+                                                            }
+                                                            Text(text = "${session.targetsHit}/${session.totalTargets} Hits", fontWeight = FontWeight.Bold, color = primaryColor)
                                                         }
-                                                        Text(text = "${session.targetsHit}/${session.totalTargets} Hits", fontWeight = FontWeight.Bold, color = primaryColor)
                                                     }
                                                 }
                                             }
                                         }
-                                    }
-                                } else {
-                                    val session = selectedPatternSession!!
-                                    val sorted = patternDrawingResults.sortedBy { it.timestamp }
-                                    val currentIndex = sorted.indexOf(session)
-                                    val prevSession = if (currentIndex > 0) sorted[currentIndex - 1] else null
-                                    val historyWindow = sorted.subList(maxOf(0, currentIndex - 4), currentIndex + 1)
+                                    } else {
+                                        val session = selectedPatternSession!!
+                                        val sorted = patternDrawingResults.sortedBy { it.timestamp }
+                                        val currentIndex = sorted.indexOf(session)
+                                        val prevSession = if (currentIndex > 0) sorted[currentIndex - 1] else null
+                                        val historyWindow = sorted.subList(maxOf(0, currentIndex - 4), currentIndex + 1)
 
-                                    val recentData = historyWindow.mapIndexed { index, it ->
-                                        val label = if (index == historyWindow.lastIndex) "Selected" else dateFormatter.format(it.timestamp)
-                                        val value = when(selectedMetric) {
-                                            "Falls" -> it.fallCount.toFloat()
-                                            "Time" -> it.timeTakenMs / 1000f
-                                            "Avg Error (°)" -> it.angularErrors.takeIf { e -> e.isNotEmpty() }?.average()?.toFloat() ?: 0f
-                                            else -> it.targetsHit.toFloat()
-                                        }
-                                        ChartData(label, value)
-                                    }
-
-                                    val pb = when(selectedMetric) {
-                                        "Falls" -> sorted.minOfOrNull { it.fallCount.toFloat() } ?: 0f
-                                        "Time" -> sorted.minOfOrNull { it.timeTakenMs / 1000f } ?: 0f
-                                        "Avg Error (°)" -> sorted.minOfOrNull { it.angularErrors.takeIf { e -> e.isNotEmpty() }?.average()?.toFloat() ?: 0f } ?: 0f
-                                        else -> sorted.maxOfOrNull { it.targetsHit.toFloat() } ?: 0f
-                                    }
-
-                                    val isLowerBetter = selectedMetric == "Falls" || selectedMetric == "Time" || selectedMetric == "Avg Error (°)"
-                                    val dateFormat = SimpleDateFormat("MMM dd, yyyy - hh:mm a", Locale.getDefault())
-                                    val dateString = dateFormat.format(session.timestamp)
-
-                                    Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
-                                        Row(modifier = Modifier.clickable { selectedPatternSession = null }.padding(bottom = 16.dp), verticalAlignment = Alignment.CenterVertically) {
-                                            Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = primaryColor)
-                                            Spacer(modifier = Modifier.width(8.dp))
-                                            Text("Back to Sessions", color = primaryColor, fontWeight = FontWeight.Bold)
+                                        val recentData = historyWindow.mapIndexed { index, it ->
+                                            val label = if (index == historyWindow.lastIndex) "Selected" else dateFormatter.format(it.timestamp)
+                                            val value = when(selectedMetric) {
+                                                "Falls" -> it.fallCount.toFloat()
+                                                "Time" -> it.timeTakenMs / 1000f
+                                                "Avg Error (°)" -> it.angularErrors.takeIf { e -> e.isNotEmpty() }?.average()?.toFloat() ?: 0f
+                                                else -> it.targetsHit.toFloat()
+                                            }
+                                            ChartData(label, value)
                                         }
 
-                                        SessionSummaryBanner(dateString = dateString, posture = session.gameMode, level = session.level)
-
-                                        MetricSelector(metrics = availableMetrics, selectedMetric = selectedMetric, onMetricSelected = { selectedMetric = it }, primaryColor = primaryColor)
-
-                                        PerformanceDashboard(
-                                            title = "$selectedMetric Progression",
-                                            metrics = recentData,
-                                            personalBest = pb,
-                                            isLowerBetter = isLowerBetter,
-                                            primaryColor = primaryColor
-                                        )
-
-                                        Spacer(modifier = Modifier.height(16.dp))
-
-                                        ClinicalComparisonCard(
-                                            title = "Falls vs Previous Session",
-                                            currentValue = session.fallCount.toFloat(),
-                                            previousValue = prevSession?.fallCount?.toFloat(),
-                                            unit = "Falls",
-                                            isLowerBetter = true,
-                                            primaryColor = primaryColor
-                                        )
-
-                                        val currentAvgError = if (session.angularErrors.isNotEmpty()) session.angularErrors.average().toFloat() else 0f
-                                        val prevAvgError = if (prevSession?.angularErrors?.isNotEmpty() == true) prevSession.angularErrors.average().toFloat() else null
-                                        ClinicalComparisonCard(
-                                            title = "Avg Angular Error vs Previous",
-                                            currentValue = currentAvgError,
-                                            previousValue = prevAvgError,
-                                            unit = "° (Degrees)",
-                                            isLowerBetter = true,
-                                            primaryColor = primaryColor
-                                        )
-
-                                        val toleranceLimit = when (session.level) {
-                                            1 -> 15f
-                                            2 -> 12f
-                                            else -> 10f
+                                        val pb = when(selectedMetric) {
+                                            "Falls" -> sorted.minOfOrNull { it.fallCount.toFloat() } ?: 0f
+                                            "Time" -> sorted.minOfOrNull { it.timeTakenMs / 1000f } ?: 0f
+                                            "Avg Error (°)" -> sorted.minOfOrNull { it.angularErrors.takeIf { e -> e.isNotEmpty() }?.average()?.toFloat() ?: 0f } ?: 0f
+                                            else -> sorted.maxOfOrNull { it.targetsHit.toFloat() } ?: 0f
                                         }
-                                        ClinicalErrorBarChart(
-                                            title = "Target Error vs Acceptable Tolerance (°)",
-                                            errors = session.angularErrors,
-                                            barLabelPrefix = "T",
-                                            baseLimit = toleranceLimit
-                                        )
 
-                                        Card(
-                                            modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp),
-                                            colors = CardDefaults.cardColors(containerColor = Color.White),
-                                            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
-                                        ) {
-                                            Column(modifier = Modifier.padding(16.dp)) {
-                                                Text("Accuracy & Path Tolerance Overlay", fontWeight = FontWeight.Bold, color = Color.DarkGray, fontSize = 16.sp)
-                                                Spacer(modifier = Modifier.height(16.dp))
+                                        val isLowerBetter = selectedMetric == "Falls" || selectedMetric == "Time" || selectedMetric == "Avg Error (°)"
+                                        val dateString = fullDateFormatter.format(session.timestamp)
 
-                                                Box(modifier = Modifier.fillMaxWidth().aspectRatio(1f).background(Color(0xFFFAFAFA), RoundedCornerShape(8.dp)), contentAlignment = Alignment.Center) {
-                                                    Canvas(modifier = Modifier.fillMaxSize()) {
-                                                        val centerX = size.width / 2
-                                                        val centerY = size.height / 2
-                                                        val outerRadius = size.width / 2.8f
-                                                        val maxTiltDegrees = if (session.gameMode == "SITTING") 14f else 20f
+                                        Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+                                            Row(modifier = Modifier.clickable {
+                                                if(selectedGroupedSession != null) selectedMode = "Session"
+                                                else if(selectedOverviewSession != null) selectedGame = "Overview Dashboard"
+                                                selectedPatternSession = null
+                                            }.padding(bottom = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                                                Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = primaryColor)
+                                                Spacer(modifier = Modifier.width(8.dp))
+                                                Text(if(selectedGroupedSession != null || selectedOverviewSession != null) "Back to Session Report" else "Back to List", color = primaryColor, fontWeight = FontWeight.Bold)
+                                            }
 
-                                                        val numSpokes = when (session.level) { 1 -> 4; 2 -> 6; else -> 8 }
-                                                        val targetOffsets = mutableListOf<Offset>()
-                                                        targetOffsets.add(Offset(0f, 0f))
-                                                        for (i in 0 until numSpokes) {
-                                                            val angle = Math.PI * 2 * i / numSpokes - (Math.PI / 2)
-                                                            targetOffsets.add(Offset(cos(angle).toFloat() * 0.8f, sin(angle).toFloat() * 0.8f))
+                                            SessionSummaryBanner(dateString = dateString, posture = session.gameMode, level = session.level)
+
+                                            MetricSelector(metrics = availableMetrics, selectedMetric = selectedMetric, onMetricSelected = { selectedMetric = it }, primaryColor = primaryColor)
+
+                                            PerformanceDashboard(
+                                                title = "$selectedMetric Progression",
+                                                metrics = recentData,
+                                                personalBest = pb,
+                                                isLowerBetter = isLowerBetter,
+                                                primaryColor = primaryColor
+                                            )
+
+                                            Spacer(modifier = Modifier.height(16.dp))
+
+                                            ClinicalComparisonCard(
+                                                title = "Falls vs Previous Session",
+                                                currentValue = session.fallCount.toFloat(),
+                                                previousValue = prevSession?.fallCount?.toFloat(),
+                                                unit = "Falls",
+                                                isLowerBetter = true,
+                                                primaryColor = primaryColor
+                                            )
+
+                                            val currentAvgError = if (session.angularErrors.isNotEmpty()) session.angularErrors.average().toFloat() else 0f
+                                            val prevAvgError = if (prevSession?.angularErrors?.isNotEmpty() == true) prevSession.angularErrors.average().toFloat() else null
+                                            ClinicalComparisonCard(
+                                                title = "Avg Angular Error vs Previous",
+                                                currentValue = currentAvgError,
+                                                previousValue = prevAvgError,
+                                                unit = "° (Degrees)",
+                                                isLowerBetter = true,
+                                                primaryColor = primaryColor
+                                            )
+
+                                            val toleranceLimit = when (session.level) {
+                                                1 -> 15f
+                                                2 -> 12f
+                                                else -> 10f
+                                            }
+                                            ClinicalErrorBarChart(
+                                                title = "Target Error vs Acceptable Tolerance (°)",
+                                                errors = session.angularErrors,
+                                                barLabelPrefix = "T",
+                                                baseLimit = toleranceLimit
+                                            )
+
+                                            Card(
+                                                modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp),
+                                                colors = CardDefaults.cardColors(containerColor = Color.White),
+                                                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+                                            ) {
+                                                Column(modifier = Modifier.padding(16.dp)) {
+                                                    Text("Accuracy & Path Tolerance Overlay", fontWeight = FontWeight.Bold, color = Color.DarkGray, fontSize = 16.sp)
+                                                    Spacer(modifier = Modifier.height(16.dp))
+
+                                                    Box(modifier = Modifier.fillMaxWidth().aspectRatio(1f).background(Color(0xFFFAFAFA), RoundedCornerShape(8.dp)), contentAlignment = Alignment.Center) {
+                                                        Canvas(modifier = Modifier.fillMaxSize()) {
+                                                            val centerX = size.width / 2
+                                                            val centerY = size.height / 2
+                                                            val outerRadius = size.width / 2.8f
+                                                            val maxTiltDegrees = if (session.gameMode == "SITTING") 14f else 20f
+
+                                                            val numSpokes = when (session.level) { 1 -> 4; 2 -> 6; else -> 8 }
+                                                            val targetOffsets = mutableListOf<Offset>()
                                                             targetOffsets.add(Offset(0f, 0f))
-                                                        }
-
-                                                        val idealPath = Path().apply {
-                                                            val start = Offset(centerX + (targetOffsets.first().x * outerRadius), centerY + (targetOffsets.first().y * outerRadius))
-                                                            moveTo(start.x, start.y)
-                                                            for (i in 1 until targetOffsets.size) {
-                                                                val px = Offset(centerX + (targetOffsets[i].x * outerRadius), centerY + (targetOffsets[i].y * outerRadius))
-                                                                lineTo(px.x, px.y)
+                                                            for (i in 0 until numSpokes) {
+                                                                val angle = Math.PI * 2 * i / numSpokes - (Math.PI / 2)
+                                                                targetOffsets.add(Offset(cos(angle).toFloat() * 0.8f, sin(angle).toFloat() * 0.8f))
+                                                                targetOffsets.add(Offset(0f, 0f))
                                                             }
-                                                        }
 
-                                                        drawPath(path = idealPath, color = Color.LightGray.copy(alpha = 0.5f), style = Stroke(width = 40f, cap = StrokeCap.Round, join = StrokeJoin.Round))
-                                                        drawPath(path = idealPath, color = Color.Gray.copy(alpha = 0.8f), style = Stroke(width = 4f))
-
-                                                        var lastX = centerX
-                                                        var lastY = centerY
-
-                                                        if (session.frontalData.isNotEmpty() && session.sagittalData.isNotEmpty()) {
-                                                            val userPath = Path()
-                                                            val sizeToUse = minOf(session.frontalData.size, session.sagittalData.size)
-
-                                                            for (i in 0 until sizeToUse) {
-                                                                val pitch = session.frontalData[i]
-                                                                val yaw = session.sagittalData[i]
-
-                                                                val rawDotX = (yaw / maxTiltDegrees) * outerRadius
-                                                                val rawDotY = -(pitch / maxTiltDegrees) * outerRadius
-
-                                                                val dist = sqrt(rawDotX * rawDotX + rawDotY * rawDotY)
-                                                                val scale = if (dist > outerRadius) outerRadius / dist else 1f
-
-                                                                val pxX = centerX + (rawDotX * scale)
-                                                                val pxY = centerY + (rawDotY * scale)
-
-                                                                if (i == 0) userPath.moveTo(pxX, pxY) else userPath.lineTo(pxX, pxY)
-
-                                                                if (i == sizeToUse - 1) {
-                                                                    lastX = pxX
-                                                                    lastY = pxY
-                                                                }
-                                                            }
-                                                            drawPath(path = userPath, color = Color(0xFF188B97).copy(alpha = 0.8f), style = Stroke(width = 6f, join = StrokeJoin.Round))
-                                                        }
-
-                                                        val annotationDash = PathEffect.dashPathEffect(floatArrayOf(10f, 10f), 0f)
-
-                                                        val tpStartX = centerX - outerRadius * 1.15f
-                                                        val tpStartY = centerY - outerRadius * 1.15f
-                                                        val tgt1 = targetOffsets.getOrNull(1) ?: Offset(0f, 0f)
-                                                        drawLine(
-                                                            color = Color.Gray,
-                                                            start = Offset(tpStartX, tpStartY),
-                                                            end = Offset(centerX + tgt1.x * outerRadius, centerY + tgt1.y * outerRadius),
-                                                            strokeWidth = 1.dp.toPx(),
-                                                            pathEffect = annotationDash
-                                                        )
-                                                        drawContext.canvas.nativeCanvas.drawText("Ideal Path", tpStartX - 10f, tpStartY + 10f, textPaintLeft)
-
-                                                        val coStartX = centerX - outerRadius * 1.15f
-                                                        val coStartY = centerY + outerRadius * 1.15f
-                                                        drawLine(
-                                                            color = Color.DarkGray,
-                                                            start = Offset(coStartX, coStartY),
-                                                            end = Offset(centerX, centerY),
-                                                            strokeWidth = 1.dp.toPx(),
-                                                            pathEffect = annotationDash
-                                                        )
-                                                        drawContext.canvas.nativeCanvas.drawText("Center Start", coStartX - 10f, coStartY, textPaintLeft)
-
-                                                        if (session.frontalData.isNotEmpty()) {
-                                                            drawCircle(color = Color(0xFF188B97), radius = 4.dp.toPx(), center = Offset(lastX, lastY))
-                                                            val pmStartX = centerX + outerRadius * 1.15f
-                                                            val pmStartY = centerY - outerRadius * 1.15f
-                                                            drawLine(
-                                                                color = Color(0xFF188B97),
-                                                                start = Offset(pmStartX, pmStartY),
-                                                                end = Offset(lastX, lastY),
-                                                                strokeWidth = 1.dp.toPx(),
-                                                                pathEffect = annotationDash
-                                                            )
-                                                            drawContext.canvas.nativeCanvas.drawText("Patient Move", pmStartX + 10f, pmStartY + 10f, textPaintRight)
-                                                        }
-                                                    }
-                                                }
-
-                                                Spacer(modifier = Modifier.height(16.dp))
-                                                HorizontalDivider(color = Color.LightGray.copy(alpha = 0.5f))
-                                                Spacer(modifier = Modifier.height(16.dp))
-
-                                                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-                                                    StatBox("Score", "${session.targetsHit} / ${session.totalTargets}", primaryColor)
-                                                    StatBox("Time", "${String.format(Locale.US, "%.1f", session.timeTakenMs / 1000f)}s", Color.DarkGray)
-                                                    StatBox("Falls", "${session.fallCount}", Color.Red)
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-
-                            // ==========================================
-                            // SHAPE TRAINING LOGIC
-                            // ==========================================
-                            "Shape Training" -> {
-                                if (shapeTrainingResults.isEmpty()) {
-                                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                                        Text("No data available yet.", color = Color.Gray)
-                                    }
-                                } else if (selectedShapeSession == null) {
-                                    Column(modifier = Modifier.fillMaxSize()) {
-                                        Text("Select a Shape Training Session", fontWeight = FontWeight.Bold, color = primaryColor, fontSize = 18.sp, modifier = Modifier.padding(bottom = 16.dp))
-                                        LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                                            items(shapeTrainingResults.sortedByDescending { it.timestamp }) { session ->
-                                                val dateString = SimpleDateFormat("MMM dd, yyyy - hh:mm a", Locale.getDefault()).format(session.timestamp)
-                                                Card(
-                                                    modifier = Modifier.fillMaxWidth().clickable { selectedShapeSession = session },
-                                                    colors = CardDefaults.cardColors(containerColor = Color(0xFFF0F4F8)),
-                                                    elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
-                                                ) {
-                                                    Row(modifier = Modifier.padding(16.dp).fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                                                        Column {
-                                                            Text(text = dateString, fontWeight = FontWeight.Bold, fontSize = 16.sp, color = Color.Black)
-                                                            Text(text = "Time: ${session.timeTakenMs / 1000}s", fontSize = 14.sp, color = Color.DarkGray)
-                                                        }
-                                                        Text(text = "Score: ${session.score}", fontWeight = FontWeight.Bold, color = primaryColor, fontSize = 18.sp)
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                } else {
-                                    val session = selectedShapeSession!!
-                                    val sorted = shapeTrainingResults.sortedBy { it.timestamp }
-                                    val currentIndex = sorted.indexOf(session)
-                                    val prevSession = if (currentIndex > 0) sorted[currentIndex - 1] else null
-                                    val historyWindow = sorted.subList(maxOf(0, currentIndex - 4), currentIndex + 1)
-
-                                    val recentData = historyWindow.mapIndexed { index, it ->
-                                        val label = if (index == historyWindow.lastIndex) "Selected" else dateFormatter.format(it.timestamp)
-                                        val value = when(selectedMetric) {
-                                            "Falls" -> it.fallCount.toFloat()
-                                            "Time" -> it.timeTakenMs / 1000f
-                                            "Avg Error (°)" -> it.angularErrors.takeIf { e -> e.isNotEmpty() }?.average()?.toFloat() ?: 0f
-                                            else -> it.score.toFloat()
-                                        }
-                                        ChartData(label, value)
-                                    }
-
-                                    val pb = when(selectedMetric) {
-                                        "Falls" -> sorted.minOfOrNull { it.fallCount.toFloat() } ?: 0f
-                                        "Time" -> sorted.minOfOrNull { it.timeTakenMs / 1000f } ?: 0f
-                                        "Avg Error (°)" -> sorted.minOfOrNull { it.angularErrors.takeIf { e -> e.isNotEmpty() }?.average()?.toFloat() ?: 0f } ?: 0f
-                                        else -> sorted.maxOfOrNull { it.score.toFloat() } ?: 0f
-                                    }
-                                    val isLowerBetter = selectedMetric == "Falls" || selectedMetric == "Time" || selectedMetric == "Avg Error (°)"
-                                    val dateFormat = SimpleDateFormat("MMM dd, yyyy - hh:mm a", Locale.getDefault())
-                                    val dateString = dateFormat.format(session.timestamp)
-
-                                    Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
-                                        Row(modifier = Modifier.clickable { selectedShapeSession = null }.padding(bottom = 16.dp), verticalAlignment = Alignment.CenterVertically) {
-                                            Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = primaryColor)
-                                            Spacer(modifier = Modifier.width(8.dp))
-                                            Text("Back to Sessions", color = primaryColor, fontWeight = FontWeight.Bold)
-                                        }
-
-                                        SessionSummaryBanner(dateString = dateString, posture = session.gameMode, level = session.level)
-
-                                        MetricSelector(metrics = availableMetrics, selectedMetric = selectedMetric, onMetricSelected = { selectedMetric = it }, primaryColor = primaryColor)
-
-                                        PerformanceDashboard(
-                                            title = "$selectedMetric Progression",
-                                            metrics = recentData,
-                                            personalBest = pb,
-                                            isLowerBetter = isLowerBetter,
-                                            primaryColor = primaryColor
-                                        )
-
-                                        Spacer(modifier = Modifier.height(16.dp))
-
-                                        ClinicalComparisonCard(
-                                            title = "Falls vs Previous Session",
-                                            currentValue = session.fallCount.toFloat(),
-                                            previousValue = prevSession?.fallCount?.toFloat(),
-                                            unit = "Falls",
-                                            isLowerBetter = true,
-                                            primaryColor = primaryColor
-                                        )
-
-                                        val currentAvgError = if (session.angularErrors.isNotEmpty()) session.angularErrors.average().toFloat() else 0f
-                                        val prevAvgError = if (prevSession?.angularErrors?.isNotEmpty() == true) prevSession.angularErrors.average().toFloat() else null
-                                        ClinicalComparisonCard(
-                                            title = "Avg Angular Error vs Previous",
-                                            currentValue = currentAvgError,
-                                            previousValue = prevAvgError,
-                                            unit = "° (Degrees)",
-                                            isLowerBetter = true,
-                                            primaryColor = primaryColor
-                                        )
-
-                                        val toleranceLimit = when (session.level) {
-                                            1 -> 15f
-                                            2 -> 12f
-                                            else -> 10f
-                                        }
-                                        ClinicalErrorBarChart(
-                                            title = "Target Error vs Acceptable Tolerance (°)",
-                                            errors = session.angularErrors,
-                                            barLabelPrefix = "T",
-                                            baseLimit = toleranceLimit
-                                        )
-
-                                        Card(
-                                            modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp),
-                                            colors = CardDefaults.cardColors(containerColor = Color.White),
-                                            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
-                                        ) {
-                                            Column(modifier = Modifier.padding(16.dp)) {
-                                                Text("Accuracy & Target Path Overlay", fontWeight = FontWeight.Bold, color = Color.DarkGray, fontSize = 16.sp)
-                                                Spacer(modifier = Modifier.height(16.dp))
-
-                                                Box(modifier = Modifier.fillMaxWidth().aspectRatio(1f).background(Color(0xFFFAFAFA), RoundedCornerShape(8.dp)).padding(bottom = 16.dp), contentAlignment = Alignment.Center) {
-                                                    Canvas(modifier = Modifier.fillMaxSize()) {
-                                                        val centerX = size.width / 2
-                                                        val centerY = size.height / 2
-                                                        val outerRadius = size.width / 2.8f
-                                                        val targetPlacementRadius = outerRadius * 0.75f
-                                                        val nodeRadius = 18.dp.toPx()
-                                                        val maxTiltDegrees = if (session.gameMode == "SITTING") 14f else 16f
-
-                                                        drawCircle(color = Color.LightGray.copy(alpha = 0.5f), radius = outerRadius, center = Offset(centerX, centerY), style = Stroke(width = 4f))
-                                                        drawCircle(color = Color.LightGray.copy(alpha = 0.8f), radius = 6.dp.toPx(), center = Offset(centerX, centerY))
-
-                                                        val angles = if (session.targetAngles.isNotEmpty()) session.targetAngles else listOf(0f, 45f, 90f, 135f, 180f, 225f, 270f, 315f)
-                                                        var tgtLastX = centerX
-                                                        var tgtLastY = centerY
-
-                                                        if (session.targetSequence.isNotEmpty()) {
-                                                            val idealPath = Path()
-                                                            idealPath.moveTo(centerX, centerY)
-
-                                                            session.targetSequence.forEachIndexed { i, targetIndex ->
-                                                                val tx = centerX + (targetPlacementRadius * cos(Math.toRadians(angles[targetIndex].toDouble()))).toFloat()
-                                                                val ty = centerY + (targetPlacementRadius * sin(Math.toRadians(angles[targetIndex].toDouble()))).toFloat()
-                                                                idealPath.lineTo(tx, ty)
-
-                                                                if(i == 0) {
-                                                                    tgtLastX = tx
-                                                                    tgtLastY = ty
+                                                            val idealPath = Path().apply {
+                                                                val start = Offset(centerX + (targetOffsets.first().x * outerRadius), centerY + (targetOffsets.first().y * outerRadius))
+                                                                moveTo(start.x, start.y)
+                                                                for (i in 1 until targetOffsets.size) {
+                                                                    val px = Offset(centerX + (targetOffsets[i].x * outerRadius), centerY + (targetOffsets[i].y * outerRadius))
+                                                                    lineTo(px.x, px.y)
                                                                 }
                                                             }
 
                                                             drawPath(path = idealPath, color = Color.LightGray.copy(alpha = 0.5f), style = Stroke(width = 40f, cap = StrokeCap.Round, join = StrokeJoin.Round))
                                                             drawPath(path = idealPath, color = Color.Gray.copy(alpha = 0.8f), style = Stroke(width = 4f))
-                                                        }
 
-                                                        val colors = listOf(Color(0xFFE53935), Color(0xFF1E88E5), Color(0xFF43A047), Color(0xFFFDD835), Color(0xFF8E24AA), Color(0xFFF4511E), Color(0xFF00ACC1), Color(0xFFD81B60))
-                                                        val shapes = listOf(0, 1, 2, 3, 0, 1, 2, 3)
+                                                            var lastX = centerX
+                                                            var lastY = centerY
 
-                                                        for (i in 0 until 8) {
-                                                            val angleRad = Math.toRadians(angles[i].toDouble())
-                                                            val cx = centerX + (targetPlacementRadius * cos(angleRad)).toFloat()
-                                                            val cy = centerY + (targetPlacementRadius * sin(angleRad)).toFloat()
-                                                            val color = colors[i].copy(alpha = 0.3f)
+                                                            if (session.frontalData.isNotEmpty() && session.sagittalData.isNotEmpty()) {
+                                                                val userPath = Path()
+                                                                val sizeToUse = minOf(session.frontalData.size, session.sagittalData.size)
 
-                                                            when (shapes[i]) {
-                                                                0 -> drawCircle(color = color, radius = nodeRadius, center = Offset(cx, cy))
-                                                                1 -> drawRect(color = color, topLeft = Offset(cx - nodeRadius, cy - nodeRadius), size = androidx.compose.ui.geometry.Size(nodeRadius * 2, nodeRadius * 2))
-                                                                2 -> {
-                                                                    val p = Path().apply { moveTo(cx, cy - nodeRadius); lineTo(cx + nodeRadius, cy + nodeRadius); lineTo(cx - nodeRadius, cy + nodeRadius); close() }
-                                                                    drawPath(p, color)
-                                                                }
-                                                                3 -> {
-                                                                    val p = Path()
-                                                                    val innerRadius = nodeRadius * 0.4f
-                                                                    var a = -Math.PI / 2
-                                                                    for (j in 0 until 10) {
-                                                                        val r = if (j % 2 == 0) nodeRadius else innerRadius
-                                                                        val x = cx + (r * cos(a)).toFloat()
-                                                                        val y = cy + (r * sin(a)).toFloat()
-                                                                        if (j == 0) p.moveTo(x, y) else p.lineTo(x, y)
-                                                                        a += Math.PI / 5
+                                                                for (i in 0 until sizeToUse) {
+                                                                    val pitch = session.frontalData[i]
+                                                                    val yaw = session.sagittalData[i]
+
+                                                                    val rawDotX = (yaw / maxTiltDegrees) * outerRadius
+                                                                    val rawDotY = -(pitch / maxTiltDegrees) * outerRadius
+
+                                                                    val dist = sqrt(rawDotX * rawDotX + rawDotY * rawDotY)
+                                                                    val scale = if (dist > outerRadius) outerRadius / dist else 1f
+
+                                                                    val pxX = centerX + (rawDotX * scale)
+                                                                    val pxY = centerY + (rawDotY * scale)
+
+                                                                    if (i == 0) userPath.moveTo(pxX, pxY) else userPath.lineTo(pxX, pxY)
+
+                                                                    if (i == sizeToUse - 1) {
+                                                                        lastX = pxX
+                                                                        lastY = pxY
                                                                     }
-                                                                    p.close()
-                                                                    drawPath(p, color)
                                                                 }
+                                                                drawPath(path = userPath, color = Color(0xFF188B97).copy(alpha = 0.8f), style = Stroke(width = 6f, join = StrokeJoin.Round))
                                                             }
-                                                        }
 
-                                                        var lastX = centerX
-                                                        var lastY = centerY
+                                                            val annotationDash = PathEffect.dashPathEffect(floatArrayOf(10f, 10f), 0f)
 
-                                                        if (session.frontalData.isNotEmpty() && session.sagittalData.isNotEmpty()) {
-                                                            val userPath = Path()
-                                                            val sizeToUse = minOf(session.frontalData.size, session.sagittalData.size)
-
-                                                            for (i in 0 until sizeToUse) {
-                                                                val pitch = session.frontalData[i]
-                                                                val yaw = session.sagittalData[i]
-
-                                                                val rawDotX = (yaw / maxTiltDegrees) * outerRadius
-                                                                val rawDotY = -(pitch / maxTiltDegrees) * outerRadius
-                                                                val dist = sqrt(rawDotX * rawDotX + rawDotY * rawDotY)
-                                                                val scale = if (dist > outerRadius) outerRadius / dist else 1f
-
-                                                                val pxX = centerX + (rawDotX * scale)
-                                                                val pxY = centerY + (rawDotY * scale)
-
-                                                                if (i == 0) userPath.moveTo(pxX, pxY) else userPath.lineTo(pxX, pxY)
-
-                                                                if (i == sizeToUse - 1) {
-                                                                    lastX = pxX
-                                                                    lastY = pxY
-                                                                }
-                                                            }
-                                                            drawPath(path = userPath, color = Color(0xFF188B97).copy(alpha = 0.8f), style = Stroke(width = 6f, join = StrokeJoin.Round))
-                                                        }
-
-                                                        val annotationDash = PathEffect.dashPathEffect(floatArrayOf(10f, 10f), 0f)
-
-                                                        val tsStartX = centerX - outerRadius * 1.15f
-                                                        val tsStartY = centerY - outerRadius * 1.15f
-                                                        drawLine(
-                                                            color = Color.Gray,
-                                                            start = Offset(tsStartX, tsStartY),
-                                                            end = Offset(tgtLastX, tgtLastY),
-                                                            strokeWidth = 1.dp.toPx(),
-                                                            pathEffect = annotationDash
-                                                        )
-                                                        drawContext.canvas.nativeCanvas.drawText("Target Path", tsStartX - 10f, tsStartY + 10f, textPaintLeft)
-
-                                                        if (session.frontalData.isNotEmpty()) {
-                                                            drawCircle(color = Color(0xFF188B97), radius = 4.dp.toPx(), center = Offset(lastX, lastY))
-                                                            val pmStartX = centerX + outerRadius * 1.15f
-                                                            val pmStartY = centerY - outerRadius * 1.15f
+                                                            val tpStartX = centerX - outerRadius * 1.15f
+                                                            val tpStartY = centerY - outerRadius * 1.15f
+                                                            val tgt1 = targetOffsets.getOrNull(1) ?: Offset(0f, 0f)
                                                             drawLine(
-                                                                color = Color(0xFF188B97),
-                                                                start = Offset(pmStartX, pmStartY),
-                                                                end = Offset(lastX, lastY),
+                                                                color = Color.Gray,
+                                                                start = Offset(tpStartX, tpStartY),
+                                                                end = Offset(centerX + tgt1.x * outerRadius, centerY + tgt1.y * outerRadius),
                                                                 strokeWidth = 1.dp.toPx(),
                                                                 pathEffect = annotationDash
                                                             )
-                                                            drawContext.canvas.nativeCanvas.drawText("Patient Move", pmStartX + 10f, pmStartY + 10f, textPaintRight)
+                                                            drawContext.canvas.nativeCanvas.drawText("Ideal Path", tpStartX - 10f, tpStartY + 10f, textPaintLeft)
+
+                                                            val coStartX = centerX - outerRadius * 1.15f
+                                                            val coStartY = centerY + outerRadius * 1.15f
+                                                            drawLine(
+                                                                color = Color.DarkGray,
+                                                                start = Offset(coStartX, coStartY),
+                                                                end = Offset(centerX, centerY),
+                                                                strokeWidth = 1.dp.toPx(),
+                                                                pathEffect = annotationDash
+                                                            )
+                                                            drawContext.canvas.nativeCanvas.drawText("Center Start", coStartX - 10f, coStartY, textPaintLeft)
+
+                                                            if (session.frontalData.isNotEmpty()) {
+                                                                drawCircle(color = Color(0xFF188B97), radius = 4.dp.toPx(), center = Offset(lastX, lastY))
+                                                                val pmStartX = centerX + outerRadius * 1.15f
+                                                                val pmStartY = centerY - outerRadius * 1.15f
+                                                                drawLine(
+                                                                    color = Color(0xFF188B97),
+                                                                    start = Offset(pmStartX, pmStartY),
+                                                                    end = Offset(lastX, lastY),
+                                                                    strokeWidth = 1.dp.toPx(),
+                                                                    pathEffect = annotationDash
+                                                                )
+                                                                drawContext.canvas.nativeCanvas.drawText("Patient Move", pmStartX + 10f, pmStartY + 10f, textPaintRight)
+                                                            }
+                                                        }
+                                                    }
+
+                                                    Spacer(modifier = Modifier.height(16.dp))
+                                                    HorizontalDivider(color = Color.LightGray.copy(alpha = 0.5f))
+                                                    Spacer(modifier = Modifier.height(16.dp))
+
+                                                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+                                                        StatBox("Score", "${session.targetsHit} / ${session.totalTargets}", primaryColor)
+                                                        StatBox("Time", "${String.format(Locale.US, "%.1f", session.timeTakenMs / 1000f)}s", Color.DarkGray)
+                                                        StatBox("Falls", "${session.fallCount}", Color.Red)
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // ==========================================
+                                // SHAPE TRAINING LOGIC
+                                // ==========================================
+                                "Shape Training" -> {
+                                    if (shapeTrainingResults.isEmpty()) {
+                                        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                            Text("No data available yet.", color = Color.Gray)
+                                        }
+                                    } else if (selectedShapeSession == null) {
+                                        Column(modifier = Modifier.fillMaxSize()) {
+                                            Text("Select a Shape Training Session", fontWeight = FontWeight.Bold, color = primaryColor, fontSize = 18.sp, modifier = Modifier.padding(bottom = 16.dp))
+                                            LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                                                items(shapeTrainingResults.sortedByDescending { it.timestamp }) { session ->
+                                                    val dateString = fullDateFormatter.format(session.timestamp)
+                                                    Card(
+                                                        modifier = Modifier.fillMaxWidth().clickable { selectedShapeSession = session },
+                                                        colors = CardDefaults.cardColors(containerColor = Color(0xFFF0F4F8)),
+                                                        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+                                                    ) {
+                                                        Row(modifier = Modifier.padding(16.dp).fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                                                            Column {
+                                                                Text(text = dateString, fontWeight = FontWeight.Bold, fontSize = 16.sp, color = Color.Black)
+                                                                Text(text = "Time: ${session.timeTakenMs / 1000}s", fontSize = 14.sp, color = Color.DarkGray)
+                                                            }
+                                                            Text(text = "Score: ${session.score}", fontWeight = FontWeight.Bold, color = primaryColor, fontSize = 18.sp)
                                                         }
                                                     }
                                                 }
-
-                                                Spacer(modifier = Modifier.height(16.dp))
-                                                HorizontalDivider(color = Color.LightGray.copy(alpha = 0.5f))
-                                                Spacer(modifier = Modifier.height(16.dp))
-
-                                                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-                                                    StatBox("Score", "${session.score}", primaryColor)
-                                                    StatBox("Time", "${String.format(Locale.US, "%.1f", session.timeTakenMs / 1000f)}s", Color.DarkGray)
-                                                    StatBox("Falls", "${session.fallCount}", Color.Red)
-                                                }
                                             }
                                         }
-                                    }
-                                }
-                            }
+                                    } else {
+                                        val session = selectedShapeSession!!
+                                        val sorted = shapeTrainingResults.sortedBy { it.timestamp }
+                                        val currentIndex = sorted.indexOf(session)
+                                        val prevSession = if (currentIndex > 0) sorted[currentIndex - 1] else null
+                                        val historyWindow = sorted.subList(maxOf(0, currentIndex - 4), currentIndex + 1)
 
-                            // ==========================================
-                            // COLOR SORTER LOGIC
-                            // ==========================================
-                            "Color Sorter" -> {
-                                if (colorSorterResults.isEmpty()) {
-                                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                                        Text("No data available yet.", color = Color.Gray)
-                                    }
-                                } else if (selectedColorSorterSession == null) {
-                                    Column(modifier = Modifier.fillMaxSize()) {
-                                        Text("Select a Color Sorter Session", fontWeight = FontWeight.Bold, color = primaryColor, fontSize = 18.sp, modifier = Modifier.padding(bottom = 16.dp))
-                                        LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                                            items(colorSorterResults.sortedByDescending { it.timestamp }) { session ->
-                                                val dateString = java.text.SimpleDateFormat("MMM dd, yyyy - hh:mm a", java.util.Locale.getDefault()).format(session.timestamp)
-                                                Card(
-                                                    modifier = Modifier.fillMaxWidth().clickable { selectedColorSorterSession = session },
-                                                    colors = CardDefaults.cardColors(containerColor = Color(0xFFF0F4F8)),
-                                                    elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
-                                                ) {
-                                                    Row(modifier = Modifier.padding(16.dp).fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                                                        Text(text = dateString, fontWeight = FontWeight.Bold, fontSize = 16.sp, color = Color.Black)
-                                                        Text(text = "Score: ${session.score}", fontWeight = FontWeight.Bold, color = primaryColor, fontSize = 18.sp)
+                                        val recentData = historyWindow.mapIndexed { index, it ->
+                                            val label = if (index == historyWindow.lastIndex) "Selected" else dateFormatter.format(it.timestamp)
+                                            val value = when(selectedMetric) {
+                                                "Falls" -> it.fallCount.toFloat()
+                                                "Time" -> it.timeTakenMs / 1000f
+                                                "Avg Error (°)" -> it.angularErrors.takeIf { e -> e.isNotEmpty() }?.average()?.toFloat() ?: 0f
+                                                else -> it.score.toFloat()
+                                            }
+                                            ChartData(label, value)
+                                        }
+
+                                        val pb = when(selectedMetric) {
+                                            "Falls" -> sorted.minOfOrNull { it.fallCount.toFloat() } ?: 0f
+                                            "Time" -> sorted.minOfOrNull { it.timeTakenMs / 1000f } ?: 0f
+                                            "Avg Error (°)" -> sorted.minOfOrNull { it.angularErrors.takeIf { e -> e.isNotEmpty() }?.average()?.toFloat() ?: 0f } ?: 0f
+                                            else -> sorted.maxOfOrNull { it.score.toFloat() } ?: 0f
+                                        }
+                                        val isLowerBetter = selectedMetric == "Falls" || selectedMetric == "Time" || selectedMetric == "Avg Error (°)"
+                                        val dateString = fullDateFormatter.format(session.timestamp)
+
+                                        Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+                                            Row(modifier = Modifier.clickable {
+                                                if(selectedGroupedSession != null) selectedMode = "Session"
+                                                else if(selectedOverviewSession != null) selectedGame = "Overview Dashboard"
+                                                selectedShapeSession = null
+                                            }.padding(bottom = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                                                Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = primaryColor)
+                                                Spacer(modifier = Modifier.width(8.dp))
+                                                Text(if(selectedGroupedSession != null || selectedOverviewSession != null) "Back to Session Report" else "Back to List", color = primaryColor, fontWeight = FontWeight.Bold)
+                                            }
+
+                                            SessionSummaryBanner(dateString = dateString, posture = session.gameMode, level = session.level)
+
+                                            MetricSelector(metrics = availableMetrics, selectedMetric = selectedMetric, onMetricSelected = { selectedMetric = it }, primaryColor = primaryColor)
+
+                                            PerformanceDashboard(
+                                                title = "$selectedMetric Progression",
+                                                metrics = recentData,
+                                                personalBest = pb,
+                                                isLowerBetter = isLowerBetter,
+                                                primaryColor = primaryColor
+                                            )
+
+                                            Spacer(modifier = Modifier.height(16.dp))
+
+                                            ClinicalComparisonCard(
+                                                title = "Falls vs Previous Session",
+                                                currentValue = session.fallCount.toFloat(),
+                                                previousValue = prevSession?.fallCount?.toFloat(),
+                                                unit = "Falls",
+                                                isLowerBetter = true,
+                                                primaryColor = primaryColor
+                                            )
+
+                                            val currentAvgError = if (session.angularErrors.isNotEmpty()) session.angularErrors.average().toFloat() else 0f
+                                            val prevAvgError = if (prevSession?.angularErrors?.isNotEmpty() == true) prevSession.angularErrors.average().toFloat() else null
+                                            ClinicalComparisonCard(
+                                                title = "Avg Angular Error vs Previous",
+                                                currentValue = currentAvgError,
+                                                previousValue = prevAvgError,
+                                                unit = "° (Degrees)",
+                                                isLowerBetter = true,
+                                                primaryColor = primaryColor
+                                            )
+
+                                            val toleranceLimit = when (session.level) {
+                                                1 -> 15f
+                                                2 -> 12f
+                                                else -> 10f
+                                            }
+                                            ClinicalErrorBarChart(
+                                                title = "Target Error vs Acceptable Tolerance (°)",
+                                                errors = session.angularErrors,
+                                                barLabelPrefix = "T",
+                                                baseLimit = toleranceLimit
+                                            )
+
+                                            Card(
+                                                modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp),
+                                                colors = CardDefaults.cardColors(containerColor = Color.White),
+                                                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+                                            ) {
+                                                Column(modifier = Modifier.padding(16.dp)) {
+                                                    Text("Accuracy & Target Path Overlay", fontWeight = FontWeight.Bold, color = Color.DarkGray, fontSize = 16.sp)
+                                                    Spacer(modifier = Modifier.height(16.dp))
+
+                                                    Box(modifier = Modifier.fillMaxWidth().aspectRatio(1f).background(Color(0xFFFAFAFA), RoundedCornerShape(8.dp)).padding(bottom = 16.dp), contentAlignment = Alignment.Center) {
+                                                        Canvas(modifier = Modifier.fillMaxSize()) {
+                                                            val centerX = size.width / 2
+                                                            val centerY = size.height / 2
+                                                            val outerRadius = size.width / 2.8f
+                                                            val targetPlacementRadius = outerRadius * 0.75f
+                                                            val nodeRadius = 18.dp.toPx()
+                                                            val maxTiltDegrees = if (session.gameMode == "SITTING") 14f else 16f
+
+                                                            drawCircle(color = Color.LightGray.copy(alpha = 0.5f), radius = outerRadius, center = Offset(centerX, centerY), style = Stroke(width = 4f))
+                                                            drawCircle(color = Color.LightGray.copy(alpha = 0.8f), radius = 6.dp.toPx(), center = Offset(centerX, centerY))
+
+                                                            val angles = if (session.targetAngles.isNotEmpty()) session.targetAngles else listOf(0f, 45f, 90f, 135f, 180f, 225f, 270f, 315f)
+                                                            var tgtLastX = centerX
+                                                            var tgtLastY = centerY
+
+                                                            if (session.targetSequence.isNotEmpty()) {
+                                                                val idealPath = Path()
+                                                                idealPath.moveTo(centerX, centerY)
+
+                                                                session.targetSequence.forEachIndexed { i, targetIndex ->
+                                                                    val tx = centerX + (targetPlacementRadius * cos(Math.toRadians(angles[targetIndex].toDouble()))).toFloat()
+                                                                    val ty = centerY + (targetPlacementRadius * sin(Math.toRadians(angles[targetIndex].toDouble()))).toFloat()
+                                                                    idealPath.lineTo(tx, ty)
+
+                                                                    if(i == 0) {
+                                                                        tgtLastX = tx
+                                                                        tgtLastY = ty
+                                                                    }
+                                                                }
+
+                                                                drawPath(path = idealPath, color = Color.LightGray.copy(alpha = 0.5f), style = Stroke(width = 40f, cap = StrokeCap.Round, join = StrokeJoin.Round))
+                                                                drawPath(path = idealPath, color = Color.Gray.copy(alpha = 0.8f), style = Stroke(width = 4f))
+                                                            }
+
+                                                            val colors = listOf(Color(0xFFE53935), Color(0xFF1E88E5), Color(0xFF43A047), Color(0xFFFDD835), Color(0xFF8E24AA), Color(0xFFF4511E), Color(0xFF00ACC1), Color(0xFFD81B60))
+                                                            val shapes = listOf(0, 1, 2, 3, 0, 1, 2, 3)
+
+                                                            for (i in 0 until 8) {
+                                                                val angleRad = Math.toRadians(angles[i].toDouble())
+                                                                val cx = centerX + (targetPlacementRadius * cos(angleRad)).toFloat()
+                                                                val cy = centerY + (targetPlacementRadius * sin(angleRad)).toFloat()
+                                                                val color = colors[i].copy(alpha = 0.3f)
+
+                                                                when (shapes[i]) {
+                                                                    0 -> drawCircle(color = color, radius = nodeRadius, center = Offset(cx, cy))
+                                                                    1 -> drawRect(color = color, topLeft = Offset(cx - nodeRadius, cy - nodeRadius), size = androidx.compose.ui.geometry.Size(nodeRadius * 2, nodeRadius * 2))
+                                                                    2 -> {
+                                                                        val p = Path().apply { moveTo(cx, cy - nodeRadius); lineTo(cx + nodeRadius, cy + nodeRadius); lineTo(cx - nodeRadius, cy + nodeRadius); close() }
+                                                                        drawPath(p, color)
+                                                                    }
+                                                                    3 -> {
+                                                                        val p = Path()
+                                                                        val innerRadius = nodeRadius * 0.4f
+                                                                        var a = -Math.PI / 2
+                                                                        for (j in 0 until 10) {
+                                                                            val r = if (j % 2 == 0) nodeRadius else innerRadius
+                                                                            val x = cx + (r * cos(a)).toFloat()
+                                                                            val y = cy + (r * sin(a)).toFloat()
+                                                                            if (j == 0) p.moveTo(x, y) else p.lineTo(x, y)
+                                                                            a += Math.PI / 5
+                                                                        }
+                                                                        p.close()
+                                                                        drawPath(p, color)
+                                                                    }
+                                                                }
+                                                            }
+
+                                                            var lastX = centerX
+                                                            var lastY = centerY
+
+                                                            if (session.frontalData.isNotEmpty() && session.sagittalData.isNotEmpty()) {
+                                                                val userPath = Path()
+                                                                val sizeToUse = minOf(session.frontalData.size, session.sagittalData.size)
+
+                                                                for (i in 0 until sizeToUse) {
+                                                                    val pitch = session.frontalData[i]
+                                                                    val yaw = session.sagittalData[i]
+
+                                                                    val rawDotX = (yaw / maxTiltDegrees) * outerRadius
+                                                                    val rawDotY = -(pitch / maxTiltDegrees) * outerRadius
+                                                                    val dist = sqrt(rawDotX * rawDotX + rawDotY * rawDotY)
+                                                                    val scale = if (dist > outerRadius) outerRadius / dist else 1f
+
+                                                                    val pxX = centerX + (rawDotX * scale)
+                                                                    val pxY = centerY + (rawDotY * scale)
+
+                                                                    if (i == 0) userPath.moveTo(pxX, pxY) else userPath.lineTo(pxX, pxY)
+
+                                                                    if (i == sizeToUse - 1) {
+                                                                        lastX = pxX
+                                                                        lastY = pxY
+                                                                    }
+                                                                }
+                                                                drawPath(path = userPath, color = Color(0xFF188B97).copy(alpha = 0.8f), style = Stroke(width = 6f, join = StrokeJoin.Round))
+                                                            }
+
+                                                            val annotationDash = PathEffect.dashPathEffect(floatArrayOf(10f, 10f), 0f)
+
+                                                            val tsStartX = centerX - outerRadius * 1.15f
+                                                            val tsStartY = centerY - outerRadius * 1.15f
+                                                            drawLine(
+                                                                color = Color.Gray,
+                                                                start = Offset(tsStartX, tsStartY),
+                                                                end = Offset(tgtLastX, tgtLastY),
+                                                                strokeWidth = 1.dp.toPx(),
+                                                                pathEffect = annotationDash
+                                                            )
+                                                            drawContext.canvas.nativeCanvas.drawText("Target Path", tsStartX - 10f, tsStartY + 10f, textPaintLeft)
+
+                                                            if (session.frontalData.isNotEmpty()) {
+                                                                drawCircle(color = Color(0xFF188B97), radius = 4.dp.toPx(), center = Offset(lastX, lastY))
+                                                                val pmStartX = centerX + outerRadius * 1.15f
+                                                                val pmStartY = centerY - outerRadius * 1.15f
+                                                                drawLine(
+                                                                    color = Color(0xFF188B97),
+                                                                    start = Offset(pmStartX, pmStartY),
+                                                                    end = Offset(lastX, lastY),
+                                                                    strokeWidth = 1.dp.toPx(),
+                                                                    pathEffect = annotationDash
+                                                                )
+                                                                drawContext.canvas.nativeCanvas.drawText("Patient Move", pmStartX + 10f, pmStartY + 10f, textPaintRight)
+                                                            }
+                                                        }
+                                                    }
+
+                                                    Spacer(modifier = Modifier.height(16.dp))
+                                                    HorizontalDivider(color = Color.LightGray.copy(alpha = 0.5f))
+                                                    Spacer(modifier = Modifier.height(16.dp))
+
+                                                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+                                                        StatBox("Score", "${session.score}", primaryColor)
+                                                        StatBox("Time", "${String.format(Locale.US, "%.1f", session.timeTakenMs / 1000f)}s", Color.DarkGray)
+                                                        StatBox("Falls", "${session.fallCount}", Color.Red)
                                                     }
                                                 }
                                             }
                                         }
                                     }
-                                } else {
-                                    val session = selectedColorSorterSession!!
-                                    val sorted = colorSorterResults.sortedBy { it.timestamp }
-                                    val currentIndex = sorted.indexOf(session)
-                                    val historyWindow = sorted.subList(maxOf(0, currentIndex - 4), currentIndex + 1)
-                                    val recentData = historyWindow.mapIndexed { index, it ->
-                                        val label = if (index == historyWindow.lastIndex) "Selected" else dateFormatter.format(it.timestamp)
-                                        ChartData(label, it.score.toFloat())
-                                    }
-                                    val pb = sorted.maxOfOrNull { it.score.toFloat() } ?: 0f
-
-                                    Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
-                                        Row(modifier = Modifier.clickable { selectedColorSorterSession = null }.padding(bottom = 16.dp), verticalAlignment = Alignment.CenterVertically) {
-                                            Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = primaryColor)
-                                            Spacer(modifier = Modifier.width(8.dp))
-                                            Text("Back to Sessions", color = primaryColor, fontWeight = FontWeight.Bold)
-                                        }
-
-                                        PerformanceDashboard(
-                                            title = "Performance Dashboard",
-                                            metrics = recentData,
-                                            personalBest = pb,
-                                            primaryColor = primaryColor
-                                        )
-
-                                        Spacer(modifier = Modifier.height(16.dp))
-
-                                        Card(modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp), colors = CardDefaults.cardColors(containerColor = Color(0xFFF5F5F5))) {
-                                            Column(modifier = Modifier.padding(16.dp).fillMaxWidth()) {
-                                                Row(horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
-                                                    Text("Final Score: ${session.score}", color = primaryColor, fontWeight = FontWeight.Bold, fontSize = 20.sp)
-                                                    Text("Missed: ${session.missedCount}", color = Color.Red, fontSize = 16.sp)
-                                                }
-                                                Spacer(modifier = Modifier.height(8.dp))
-                                                Text("🔴 Red Sorted: ${session.redCollected}", color = Color.DarkGray)
-                                                Text("🟢 Green Sorted: ${session.greenCollected}", color = Color.DarkGray)
-                                            }
-                                        }
-                                    }
                                 }
-                            }
 
-                            // ==========================================
-                            // RAT PUZZLE LOGIC
-                            // ==========================================
-                            "Rat Puzzle" -> {
-                                if (ratPuzzleResults.isEmpty()) {
-                                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                                        Text("No data available yet.", color = Color.Gray)
-                                    }
-                                } else if (selectedRatSession == null) {
-                                    Column(modifier = Modifier.fillMaxSize()) {
-                                        Text("Select a Maze Session", fontWeight = FontWeight.Bold, color = primaryColor, fontSize = 18.sp, modifier = Modifier.padding(bottom = 16.dp))
-                                        LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                                            items(ratPuzzleResults.sortedByDescending { it.timestamp }) { session ->
-                                                val dateString = java.text.SimpleDateFormat("MMM dd, yyyy - hh:mm a", java.util.Locale.getDefault()).format(session.timestamp)
-                                                Card(
-                                                    modifier = Modifier.fillMaxWidth().clickable { selectedRatSession = session },
-                                                    colors = CardDefaults.cardColors(containerColor = Color(0xFFF0F4F8)),
-                                                    elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
-                                                ) {
-                                                    Row(modifier = Modifier.padding(16.dp).fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                                                        Column {
+                                // ==========================================
+                                // COLOR SORTER LOGIC
+                                // ==========================================
+                                "Color Sorter" -> {
+                                    if (colorSorterResults.isEmpty()) {
+                                        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                            Text("No data available yet.", color = Color.Gray)
+                                        }
+                                    } else if (selectedColorSorterSession == null) {
+                                        Column(modifier = Modifier.fillMaxSize()) {
+                                            Text("Select a Color Sorter Session", fontWeight = FontWeight.Bold, color = primaryColor, fontSize = 18.sp, modifier = Modifier.padding(bottom = 16.dp))
+                                            LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                                                items(colorSorterResults.sortedByDescending { it.timestamp }) { session ->
+                                                    val dateString = fullDateFormatter.format(session.timestamp)
+                                                    Card(
+                                                        modifier = Modifier.fillMaxWidth().clickable { selectedColorSorterSession = session },
+                                                        colors = CardDefaults.cardColors(containerColor = Color(0xFFF0F4F8)),
+                                                        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+                                                    ) {
+                                                        Row(modifier = Modifier.padding(16.dp).fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                                                             Text(text = dateString, fontWeight = FontWeight.Bold, fontSize = 16.sp, color = Color.Black)
-                                                            Text(text = if (session.isWin) "🏆 Completed" else "☠️ Failed", color = if (session.isWin) Color(0xFF4CAF50) else Color.Red, fontSize = 14.sp)
+                                                            Text(text = "Score: ${session.score}", fontWeight = FontWeight.Bold, color = primaryColor, fontSize = 18.sp)
                                                         }
-                                                        Text(text = "${session.timeTakenMs / 1000}s", fontWeight = FontWeight.Bold, color = primaryColor, fontSize = 18.sp)
                                                     }
                                                 }
                                             }
                                         }
-                                    }
-                                } else {
-                                    val session = selectedRatSession!!
-                                    val sorted = ratPuzzleResults.sortedBy { it.timestamp }
-                                    val currentIndex = sorted.indexOf(session)
-                                    val historyWindow = sorted.subList(maxOf(0, currentIndex - 4), currentIndex + 1)
-                                    val recentData = historyWindow.mapIndexed { index, it ->
-                                        val label = if (index == historyWindow.lastIndex) "Selected" else dateFormatter.format(it.timestamp)
-                                        ChartData(label, it.timeTakenMs / 1000f)
-                                    }
-                                    val wins = sorted.filter { it.isWin }
-                                    val pb = if (wins.isNotEmpty()) wins.minOf { it.timeTakenMs / 1000f } else sorted.minOfOrNull { it.timeTakenMs / 1000f } ?: 0f
-
-                                    Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
-                                        Row(modifier = Modifier.clickable { selectedRatSession = null }.padding(bottom = 16.dp), verticalAlignment = Alignment.CenterVertically) {
-                                            Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = primaryColor)
-                                            Spacer(modifier = Modifier.width(8.dp))
-                                            Text("Back to Sessions", color = primaryColor, fontWeight = FontWeight.Bold)
+                                    } else {
+                                        val session = selectedColorSorterSession!!
+                                        val sorted = colorSorterResults.sortedBy { it.timestamp }
+                                        val currentIndex = sorted.indexOf(session)
+                                        val historyWindow = sorted.subList(maxOf(0, currentIndex - 4), currentIndex + 1)
+                                        val recentData = historyWindow.mapIndexed { index, it ->
+                                            val label = if (index == historyWindow.lastIndex) "Selected" else dateFormatter.format(it.timestamp)
+                                            ChartData(label, it.score.toFloat())
                                         }
+                                        val pb = sorted.maxOfOrNull { it.score.toFloat() } ?: 0f
 
-                                        PerformanceDashboard(
-                                            title = "Performance Dashboard",
-                                            metrics = recentData,
-                                            personalBest = pb,
-                                            isLowerBetter = true,
-                                            primaryColor = primaryColor
-                                        )
+                                        Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+                                            Row(modifier = Modifier.clickable {
+                                                if(selectedGroupedSession != null) selectedMode = "Session"
+                                                else if(selectedOverviewSession != null) selectedGame = "Overview Dashboard"
+                                                selectedColorSorterSession = null
+                                            }.padding(bottom = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                                                Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = primaryColor)
+                                                Spacer(modifier = Modifier.width(8.dp))
+                                                Text(if(selectedGroupedSession != null || selectedOverviewSession != null) "Back to Session Report" else "Back to List", color = primaryColor, fontWeight = FontWeight.Bold)
+                                            }
 
-                                        Spacer(modifier = Modifier.height(16.dp))
+                                            PerformanceDashboard(
+                                                title = "Performance Dashboard",
+                                                metrics = recentData,
+                                                personalBest = pb,
+                                                primaryColor = primaryColor
+                                            )
 
-                                        Card(modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp), colors = CardDefaults.cardColors(containerColor = Color(0xFFF5F5F5))) {
-                                            Column(modifier = Modifier.padding(16.dp).fillMaxWidth()) {
-                                                Row(horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
-                                                    Text(if (session.isWin) "Result: Solved!" else "Result: Failed", color = if (session.isWin) Color(0xFF4CAF50) else Color.Red, fontWeight = FontWeight.Bold, fontSize = 20.sp)
-                                                    Text("Time: ${session.timeTakenMs / 1000}s", color = primaryColor, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                                            Spacer(modifier = Modifier.height(16.dp))
+
+                                            Card(modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp), colors = CardDefaults.cardColors(containerColor = Color(0xFFF5F5F5))) {
+                                                Column(modifier = Modifier.padding(16.dp).fillMaxWidth()) {
+                                                    Row(horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
+                                                        Text("Final Score: ${session.score}", color = primaryColor, fontWeight = FontWeight.Bold, fontSize = 20.sp)
+                                                        Text("Missed: ${session.missedCount}", color = Color.Red, fontSize = 16.sp)
+                                                    }
+                                                    Spacer(modifier = Modifier.height(8.dp))
+                                                    Text("🔴 Red Sorted: ${session.redCollected}", color = Color.DarkGray)
+                                                    Text("🟢 Green Sorted: ${session.greenCollected}", color = Color.DarkGray)
                                                 }
-                                                Spacer(modifier = Modifier.height(8.dp))
-                                                Text("Lives Remaining: ${session.livesRemaining} / 3", color = Color.DarkGray)
                                             }
                                         }
                                     }
                                 }
-                            }
 
-                            // ==========================================
-                            // STARSHIP DEFENDER LOGIC
-                            // ==========================================
-                            "Starship Defender" -> {
-                                if (starshipResults.isEmpty()) {
+                                // ==========================================
+                                // RAT PUZZLE LOGIC
+                                // ==========================================
+                                "Rat Puzzle" -> {
+                                    if (ratPuzzleResults.isEmpty()) {
+                                        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                            Text("No data available yet.", color = Color.Gray)
+                                        }
+                                    } else if (selectedRatSession == null) {
+                                        Column(modifier = Modifier.fillMaxSize()) {
+                                            Text("Select a Maze Session", fontWeight = FontWeight.Bold, color = primaryColor, fontSize = 18.sp, modifier = Modifier.padding(bottom = 16.dp))
+                                            LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                                                items(ratPuzzleResults.sortedByDescending { it.timestamp }) { session ->
+                                                    val dateString = fullDateFormatter.format(session.timestamp)
+                                                    Card(
+                                                        modifier = Modifier.fillMaxWidth().clickable { selectedRatSession = session },
+                                                        colors = CardDefaults.cardColors(containerColor = Color(0xFFF0F4F8)),
+                                                        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+                                                    ) {
+                                                        Row(modifier = Modifier.padding(16.dp).fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                                                            Column {
+                                                                Text(text = dateString, fontWeight = FontWeight.Bold, fontSize = 16.sp, color = Color.Black)
+                                                                Text(text = if (session.isWin) "🏆 Completed" else "☠️ Failed", color = if (session.isWin) Color(0xFF4CAF50) else Color.Red, fontSize = 14.sp)
+                                                            }
+                                                            Text(text = "${session.timeTakenMs / 1000}s", fontWeight = FontWeight.Bold, color = primaryColor, fontSize = 18.sp)
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    } else {
+                                        val session = selectedRatSession!!
+                                        val sorted = ratPuzzleResults.sortedBy { it.timestamp }
+                                        val currentIndex = sorted.indexOf(session)
+                                        val historyWindow = sorted.subList(maxOf(0, currentIndex - 4), currentIndex + 1)
+                                        val recentData = historyWindow.mapIndexed { index, it ->
+                                            val label = if (index == historyWindow.lastIndex) "Selected" else dateFormatter.format(it.timestamp)
+                                            ChartData(label, it.timeTakenMs / 1000f)
+                                        }
+                                        val wins = sorted.filter { it.isWin }
+                                        val pb = if (wins.isNotEmpty()) wins.minOf { it.timeTakenMs / 1000f } else sorted.minOfOrNull { it.timeTakenMs / 1000f } ?: 0f
+
+                                        Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+                                            Row(modifier = Modifier.clickable {
+                                                if(selectedGroupedSession != null) selectedMode = "Session"
+                                                else if(selectedOverviewSession != null) selectedGame = "Overview Dashboard"
+                                                selectedRatSession = null
+                                            }.padding(bottom = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                                                Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = primaryColor)
+                                                Spacer(modifier = Modifier.width(8.dp))
+                                                Text(if(selectedGroupedSession != null || selectedOverviewSession != null) "Back to Session Report" else "Back to List", color = primaryColor, fontWeight = FontWeight.Bold)
+                                            }
+
+                                            PerformanceDashboard(
+                                                title = "Performance Dashboard",
+                                                metrics = recentData,
+                                                personalBest = pb,
+                                                isLowerBetter = true,
+                                                primaryColor = primaryColor
+                                            )
+
+                                            Spacer(modifier = Modifier.height(16.dp))
+
+                                            Card(modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp), colors = CardDefaults.cardColors(containerColor = Color(0xFFF5F5F5))) {
+                                                Column(modifier = Modifier.padding(16.dp).fillMaxWidth()) {
+                                                    Row(horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
+                                                        Text(if (session.isWin) "Result: Solved!" else "Result: Failed", color = if (session.isWin) Color(0xFF4CAF50) else Color.Red, fontWeight = FontWeight.Bold, fontSize = 20.sp)
+                                                        Text("Time: ${session.timeTakenMs / 1000}s", color = primaryColor, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                                                    }
+                                                    Spacer(modifier = Modifier.height(8.dp))
+                                                    Text("Lives Remaining: ${session.livesRemaining} / 3", color = Color.DarkGray)
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // ==========================================
+                                // STARSHIP DEFENDER LOGIC
+                                // ==========================================
+                                "Starship Defender" -> {
+                                    if (starshipResults.isEmpty()) {
+                                        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                            Text("No data available yet.", color = Color.Gray)
+                                        }
+                                    } else if (selectedStarshipSession == null) {
+                                        Column(modifier = Modifier.fillMaxSize()) {
+                                            Text("Select a Mission Log", fontWeight = FontWeight.Bold, color = primaryColor, fontSize = 18.sp, modifier = Modifier.padding(bottom = 16.dp))
+                                            LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                                                items(starshipResults.sortedByDescending { it.timestamp }) { session ->
+                                                    val dateString = fullDateFormatter.format(session.timestamp)
+                                                    Card(
+                                                        modifier = Modifier.fillMaxWidth().clickable { selectedStarshipSession = session },
+                                                        colors = CardDefaults.cardColors(containerColor = Color(0xFFF0F4F8)),
+                                                        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+                                                    ) {
+                                                        Row(modifier = Modifier.padding(16.dp).fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                                                            Column {
+                                                                Text(text = dateString, fontWeight = FontWeight.Bold, fontSize = 16.sp, color = Color.Black)
+                                                                Text(text = if (session.isWin) "✅ Survived 60s" else "💥 Destroyed at ${session.timeSurvivedMs / 1000}s", color = if (session.isWin) Color(0xFF4CAF50) else Color.Red, fontSize = 14.sp)
+                                                            }
+                                                            Text(text = "Score: ${session.score}", fontWeight = FontWeight.Bold, color = primaryColor, fontSize = 18.sp)
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    } else {
+                                        val session = selectedStarshipSession!!
+                                        val sorted = starshipResults.sortedBy { it.timestamp }
+                                        val currentIndex = sorted.indexOf(session)
+                                        val historyWindow = sorted.subList(maxOf(0, currentIndex - 4), currentIndex + 1)
+                                        val recentData = historyWindow.mapIndexed { index, it ->
+                                            val label = if (index == historyWindow.lastIndex) "Selected" else dateFormatter.format(it.timestamp)
+                                            ChartData(label, it.score.toFloat())
+                                        }
+                                        val pb = sorted.maxOfOrNull { it.score.toFloat() } ?: 0f
+
+                                        Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+                                            Row(modifier = Modifier.clickable {
+                                                if(selectedGroupedSession != null) selectedMode = "Session"
+                                                else if(selectedOverviewSession != null) selectedGame = "Overview Dashboard"
+                                                selectedStarshipSession = null
+                                            }.padding(bottom = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                                                Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = primaryColor)
+                                                Spacer(modifier = Modifier.width(8.dp))
+                                                Text(if(selectedGroupedSession != null || selectedOverviewSession != null) "Back to Session Report" else "Back to List", color = primaryColor, fontWeight = FontWeight.Bold)
+                                            }
+
+                                            PerformanceDashboard(
+                                                title = "Performance Dashboard",
+                                                metrics = recentData,
+                                                personalBest = pb,
+                                                primaryColor = primaryColor
+                                            )
+
+                                            Spacer(modifier = Modifier.height(16.dp))
+
+                                            Card(modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp), colors = CardDefaults.cardColors(containerColor = Color(0xFFF5F5F5))) {
+                                                Column(modifier = Modifier.padding(16.dp).fillMaxWidth()) {
+                                                    Row(horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
+                                                        Text(if (session.isWin) "Mission Success!" else "Hull Breached", color = if (session.isWin) Color(0xFF4CAF50) else Color.Red, fontWeight = FontWeight.Bold, fontSize = 20.sp)
+                                                        Text("Score: ${session.score}", color = primaryColor, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                                                    }
+                                                    Spacer(modifier = Modifier.height(8.dp))
+                                                    Text("Time Survived: ${session.timeSurvivedMs / 1000}s", color = Color.DarkGray)
+                                                    Text("Aliens Destroyed: ${session.aliensDestroyed}", color = Color.DarkGray)
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // ==========================================
+                                // HOLE NAVIGATOR LOGIC
+                                // ==========================================
+                                "Hole Navigator" -> {
+                                    if (holePuzzleResults.isEmpty()) {
+                                        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                            Text("No data available yet.", color = Color.Gray)
+                                        }
+                                    } else if (selectedHoleSession == null) {
+                                        Column(modifier = Modifier.fillMaxSize()) {
+                                            Text("Select a Run Session", fontWeight = FontWeight.Bold, color = primaryColor, fontSize = 18.sp, modifier = Modifier.padding(bottom = 16.dp))
+                                            LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                                                items(holePuzzleResults.sortedByDescending { it.timestamp }) { session ->
+                                                    val dateString = fullDateFormatter.format(session.timestamp)
+                                                    Card(
+                                                        modifier = Modifier.fillMaxWidth().clickable { selectedHoleSession = session },
+                                                        colors = CardDefaults.cardColors(containerColor = Color(0xFFF0F4F8)),
+                                                        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+                                                    ) {
+                                                        Row(modifier = Modifier.padding(16.dp).fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                                                            Column {
+                                                                Text(text = dateString, fontWeight = FontWeight.Bold, fontSize = 16.sp, color = Color.Black)
+                                                                Text(text = if (session.isWin) "✅ Reached Goal" else "💥 Fell in Hole", color = if (session.isWin) Color(0xFF4CAF50) else Color.Red, fontSize = 14.sp)
+                                                            }
+                                                            Text(text = "Score: ${session.score}", fontWeight = FontWeight.Bold, color = primaryColor, fontSize = 18.sp)
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    } else {
+                                        val session = selectedHoleSession!!
+                                        val sorted = holePuzzleResults.sortedBy { it.timestamp }
+                                        val currentIndex = sorted.indexOf(session)
+                                        val historyWindow = sorted.subList(maxOf(0, currentIndex - 4), currentIndex + 1)
+                                        val recentData = historyWindow.mapIndexed { index, it ->
+                                            val label = if (index == historyWindow.lastIndex) "Selected" else dateFormatter.format(it.timestamp)
+                                            ChartData(label, it.score.toFloat())
+                                        }
+                                        val pb = sorted.maxOfOrNull { it.score.toFloat() } ?: 0f
+
+                                        Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+                                            Row(modifier = Modifier.clickable {
+                                                if(selectedGroupedSession != null) selectedMode = "Session"
+                                                else if(selectedOverviewSession != null) selectedGame = "Overview Dashboard"
+                                                selectedHoleSession = null
+                                            }.padding(bottom = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                                                Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = primaryColor)
+                                                Spacer(modifier = Modifier.width(8.dp))
+                                                Text(if(selectedGroupedSession != null || selectedOverviewSession != null) "Back to Session Report" else "Back to List", color = primaryColor, fontWeight = FontWeight.Bold)
+                                            }
+
+                                            PerformanceDashboard(
+                                                title = "Performance Dashboard",
+                                                metrics = recentData,
+                                                personalBest = pb,
+                                                primaryColor = primaryColor
+                                            )
+
+                                            Spacer(modifier = Modifier.height(16.dp))
+
+                                            Card(modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp), colors = CardDefaults.cardColors(containerColor = Color(0xFFF5F5F5))) {
+                                                Column(modifier = Modifier.padding(16.dp).fillMaxWidth()) {
+                                                    Row(horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
+                                                        Text(if (session.isWin) "Goal Reached!" else "Run Ended", color = if (session.isWin) Color(0xFF4CAF50) else Color.Red, fontWeight = FontWeight.Bold, fontSize = 20.sp)
+                                                        Text("Score: ${session.score}", color = primaryColor, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                                                    }
+                                                    Spacer(modifier = Modifier.height(8.dp))
+                                                    Text("Time Survived: ${session.timeSurvivedMs / 1000}s", color = Color.DarkGray)
+                                                    Text("Obstacles Dodged: ${session.holesDodged}", color = Color.DarkGray)
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // ==========================================
+                                // STEP GAME LOGIC
+                                // ==========================================
+                                "Step Game" -> {
+                                    if (stepGameResults.isEmpty()) {
+                                        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                            Text("No data available yet.", color = Color.Gray)
+                                        }
+                                    } else if (selectedStepSession == null) {
+                                        Column(modifier = Modifier.fillMaxSize()) {
+                                            Text("Select a Cognitive Session", fontWeight = FontWeight.Bold, color = primaryColor, fontSize = 18.sp, modifier = Modifier.padding(bottom = 16.dp))
+                                            LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                                                items(stepGameResults.sortedByDescending { it.timestamp }) { session ->
+                                                    val dateString = fullDateFormatter.format(session.timestamp)
+                                                    Card(
+                                                        modifier = Modifier.fillMaxWidth().clickable { selectedStepSession = session },
+                                                        colors = CardDefaults.cardColors(containerColor = Color(0xFFF0F4F8)),
+                                                        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+                                                    ) {
+                                                        Row(modifier = Modifier.padding(16.dp).fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                                                            Column {
+                                                                Text(text = dateString, fontWeight = FontWeight.Bold, fontSize = 16.sp, color = Color.Black)
+                                                                Text(text = "Correct Hits: ${session.correctHits}", color = Color(0xFF4CAF50), fontSize = 14.sp)
+                                                            }
+                                                            Text(text = "Score: ${session.score}", fontWeight = FontWeight.Bold, color = primaryColor, fontSize = 18.sp)
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    } else {
+                                        val session = selectedStepSession!!
+                                        val sorted = stepGameResults.sortedBy { it.timestamp }
+                                        val currentIndex = sorted.indexOf(session)
+                                        val historyWindow = sorted.subList(maxOf(0, currentIndex - 4), currentIndex + 1)
+                                        val recentData = historyWindow.mapIndexed { index, it ->
+                                            val label = if (index == historyWindow.lastIndex) "Selected" else dateFormatter.format(it.timestamp)
+                                            ChartData(label, it.score.toFloat())
+                                        }
+                                        val pb = sorted.maxOfOrNull { it.score.toFloat() } ?: 0f
+
+                                        Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+                                            Row(modifier = Modifier.clickable {
+                                                if(selectedGroupedSession != null) selectedMode = "Session"
+                                                else if(selectedOverviewSession != null) selectedGame = "Overview Dashboard"
+                                                selectedStepSession = null
+                                            }.padding(bottom = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                                                Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = primaryColor)
+                                                Spacer(modifier = Modifier.width(8.dp))
+                                                Text(if(selectedGroupedSession != null || selectedOverviewSession != null) "Back to Session Report" else "Back to List", color = primaryColor, fontWeight = FontWeight.Bold)
+                                            }
+
+                                            PerformanceDashboard(
+                                                title = "Performance Dashboard",
+                                                metrics = recentData,
+                                                personalBest = pb,
+                                                primaryColor = primaryColor
+                                            )
+
+                                            Spacer(modifier = Modifier.height(16.dp))
+
+                                            Card(modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp), colors = CardDefaults.cardColors(containerColor = Color(0xFFF5F5F5))) {
+                                                Column(modifier = Modifier.padding(16.dp).fillMaxWidth()) {
+                                                    Row(horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
+                                                        Text("Cognitive Score", color = Color.DarkGray, fontWeight = FontWeight.Bold, fontSize = 20.sp)
+                                                        Text("${session.score}", color = primaryColor, fontWeight = FontWeight.Bold, fontSize = 20.sp)
+                                                    }
+                                                    Spacer(modifier = Modifier.height(8.dp))
+                                                    Text("✅ Correct Selections: ${session.correctHits}", color = Color(0xFF4CAF50))
+                                                    Text("❌ Incorrect Selections: ${session.incorrectHits}", color = Color.Red)
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                else -> {
                                     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                                        Text("No data available yet.", color = Color.Gray)
+                                        Text(text = "Select a valid module.", color = Color.Gray)
                                     }
-                                } else if (selectedStarshipSession == null) {
-                                    Column(modifier = Modifier.fillMaxSize()) {
-                                        Text("Select a Mission Log", fontWeight = FontWeight.Bold, color = primaryColor, fontSize = 18.sp, modifier = Modifier.padding(bottom = 16.dp))
-                                        LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                                            items(starshipResults.sortedByDescending { it.timestamp }) { session ->
-                                                val dateString = java.text.SimpleDateFormat("MMM dd, yyyy - hh:mm a", java.util.Locale.getDefault()).format(session.timestamp)
-                                                Card(
-                                                    modifier = Modifier.fillMaxWidth().clickable { selectedStarshipSession = session },
-                                                    colors = CardDefaults.cardColors(containerColor = Color(0xFFF0F4F8)),
-                                                    elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
-                                                ) {
-                                                    Row(modifier = Modifier.padding(16.dp).fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                                                        Column {
-                                                            Text(text = dateString, fontWeight = FontWeight.Bold, fontSize = 16.sp, color = Color.Black)
-                                                            Text(text = if (session.isWin) "✅ Survived 60s" else "💥 Destroyed at ${session.timeSurvivedMs / 1000}s", color = if (session.isWin) Color(0xFF4CAF50) else Color.Red, fontSize = 14.sp)
-                                                        }
-                                                        Text(text = "Score: ${session.score}", fontWeight = FontWeight.Bold, color = primaryColor, fontSize = 18.sp)
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                } else {
-                                    val session = selectedStarshipSession!!
-                                    val sorted = starshipResults.sortedBy { it.timestamp }
-                                    val currentIndex = sorted.indexOf(session)
-                                    val historyWindow = sorted.subList(maxOf(0, currentIndex - 4), currentIndex + 1)
-                                    val recentData = historyWindow.mapIndexed { index, it ->
-                                        val label = if (index == historyWindow.lastIndex) "Selected" else dateFormatter.format(it.timestamp)
-                                        ChartData(label, it.score.toFloat())
-                                    }
-                                    val pb = sorted.maxOfOrNull { it.score.toFloat() } ?: 0f
-
-                                    Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
-                                        Row(modifier = Modifier.clickable { selectedStarshipSession = null }.padding(bottom = 16.dp), verticalAlignment = Alignment.CenterVertically) {
-                                            Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = primaryColor)
-                                            Spacer(modifier = Modifier.width(8.dp))
-                                            Text("Back to Sessions", color = primaryColor, fontWeight = FontWeight.Bold)
-                                        }
-
-                                        PerformanceDashboard(
-                                            title = "Performance Dashboard",
-                                            metrics = recentData,
-                                            personalBest = pb,
-                                            primaryColor = primaryColor
-                                        )
-
-                                        Spacer(modifier = Modifier.height(16.dp))
-
-                                        Card(modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp), colors = CardDefaults.cardColors(containerColor = Color(0xFFF5F5F5))) {
-                                            Column(modifier = Modifier.padding(16.dp).fillMaxWidth()) {
-                                                Row(horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
-                                                    Text(if (session.isWin) "Mission Success!" else "Hull Breached", color = if (session.isWin) Color(0xFF4CAF50) else Color.Red, fontWeight = FontWeight.Bold, fontSize = 20.sp)
-                                                    Text("Score: ${session.score}", color = primaryColor, fontWeight = FontWeight.Bold, fontSize = 18.sp)
-                                                }
-                                                Spacer(modifier = Modifier.height(8.dp))
-                                                Text("Time Survived: ${session.timeSurvivedMs / 1000}s", color = Color.DarkGray)
-                                                Text("Aliens Destroyed: ${session.aliensDestroyed}", color = Color.DarkGray)
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-
-                            // ==========================================
-                            // HOLE NAVIGATOR LOGIC
-                            // ==========================================
-                            "Hole Navigator" -> {
-                                if (holePuzzleResults.isEmpty()) {
-                                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                                        Text("No data available yet.", color = Color.Gray)
-                                    }
-                                } else if (selectedHoleSession == null) {
-                                    Column(modifier = Modifier.fillMaxSize()) {
-                                        Text("Select a Run Session", fontWeight = FontWeight.Bold, color = primaryColor, fontSize = 18.sp, modifier = Modifier.padding(bottom = 16.dp))
-                                        LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                                            items(holePuzzleResults.sortedByDescending { it.timestamp }) { session ->
-                                                val dateString = java.text.SimpleDateFormat("MMM dd, yyyy - hh:mm a", java.util.Locale.getDefault()).format(session.timestamp)
-                                                Card(
-                                                    modifier = Modifier.fillMaxWidth().clickable { selectedHoleSession = session },
-                                                    colors = CardDefaults.cardColors(containerColor = Color(0xFFF0F4F8)),
-                                                    elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
-                                                ) {
-                                                    Row(modifier = Modifier.padding(16.dp).fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                                                        Column {
-                                                            Text(text = dateString, fontWeight = FontWeight.Bold, fontSize = 16.sp, color = Color.Black)
-                                                            Text(text = if (session.isWin) "✅ Reached Goal" else "💥 Fell in Hole", color = if (session.isWin) Color(0xFF4CAF50) else Color.Red, fontSize = 14.sp)
-                                                        }
-                                                        Text(text = "Score: ${session.score}", fontWeight = FontWeight.Bold, color = primaryColor, fontSize = 18.sp)
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                } else {
-                                    val session = selectedHoleSession!!
-                                    val sorted = holePuzzleResults.sortedBy { it.timestamp }
-                                    val currentIndex = sorted.indexOf(session)
-                                    val historyWindow = sorted.subList(maxOf(0, currentIndex - 4), currentIndex + 1)
-                                    val recentData = historyWindow.mapIndexed { index, it ->
-                                        val label = if (index == historyWindow.lastIndex) "Selected" else dateFormatter.format(it.timestamp)
-                                        ChartData(label, it.score.toFloat())
-                                    }
-                                    val pb = sorted.maxOfOrNull { it.score.toFloat() } ?: 0f
-
-                                    Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
-                                        Row(modifier = Modifier.clickable { selectedHoleSession = null }.padding(bottom = 16.dp), verticalAlignment = Alignment.CenterVertically) {
-                                            Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = primaryColor)
-                                            Spacer(modifier = Modifier.width(8.dp))
-                                            Text("Back to Sessions", color = primaryColor, fontWeight = FontWeight.Bold)
-                                        }
-
-                                        PerformanceDashboard(
-                                            title = "Performance Dashboard",
-                                            metrics = recentData,
-                                            personalBest = pb,
-                                            primaryColor = primaryColor
-                                        )
-
-                                        Spacer(modifier = Modifier.height(16.dp))
-
-                                        Card(modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp), colors = CardDefaults.cardColors(containerColor = Color(0xFFF5F5F5))) {
-                                            Column(modifier = Modifier.padding(16.dp).fillMaxWidth()) {
-                                                Row(horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
-                                                    Text(if (session.isWin) "Goal Reached!" else "Run Ended", color = if (session.isWin) Color(0xFF4CAF50) else Color.Red, fontWeight = FontWeight.Bold, fontSize = 20.sp)
-                                                    Text("Score: ${session.score}", color = primaryColor, fontWeight = FontWeight.Bold, fontSize = 18.sp)
-                                                }
-                                                Spacer(modifier = Modifier.height(8.dp))
-                                                Text("Time Survived: ${session.timeSurvivedMs / 1000}s", color = Color.DarkGray)
-                                                Text("Obstacles Dodged: ${session.holesDodged}", color = Color.DarkGray)
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-
-                            // ==========================================
-                            // STEP GAME LOGIC
-                            // ==========================================
-                            "Step Game" -> {
-                                if (stepGameResults.isEmpty()) {
-                                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                                        Text("No data available yet.", color = Color.Gray)
-                                    }
-                                } else if (selectedStepSession == null) {
-                                    Column(modifier = Modifier.fillMaxSize()) {
-                                        Text("Select a Cognitive Session", fontWeight = FontWeight.Bold, color = primaryColor, fontSize = 18.sp, modifier = Modifier.padding(bottom = 16.dp))
-                                        LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                                            items(stepGameResults.sortedByDescending { it.timestamp }) { session ->
-                                                val dateString = java.text.SimpleDateFormat("MMM dd, yyyy - hh:mm a", java.util.Locale.getDefault()).format(session.timestamp)
-                                                Card(
-                                                    modifier = Modifier.fillMaxWidth().clickable { selectedStepSession = session },
-                                                    colors = CardDefaults.cardColors(containerColor = Color(0xFFF0F4F8)),
-                                                    elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
-                                                ) {
-                                                    Row(modifier = Modifier.padding(16.dp).fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                                                        Column {
-                                                            Text(text = dateString, fontWeight = FontWeight.Bold, fontSize = 16.sp, color = Color.Black)
-                                                            Text(text = "Correct Hits: ${session.correctHits}", color = Color(0xFF4CAF50), fontSize = 14.sp)
-                                                        }
-                                                        Text(text = "Score: ${session.score}", fontWeight = FontWeight.Bold, color = primaryColor, fontSize = 18.sp)
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                } else {
-                                    val session = selectedStepSession!!
-                                    val sorted = stepGameResults.sortedBy { it.timestamp }
-                                    val currentIndex = sorted.indexOf(session)
-                                    val historyWindow = sorted.subList(maxOf(0, currentIndex - 4), currentIndex + 1)
-                                    val recentData = historyWindow.mapIndexed { index, it ->
-                                        val label = if (index == historyWindow.lastIndex) "Selected" else dateFormatter.format(it.timestamp)
-                                        ChartData(label, it.score.toFloat())
-                                    }
-                                    val pb = sorted.maxOfOrNull { it.score.toFloat() } ?: 0f
-
-                                    Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
-                                        Row(modifier = Modifier.clickable { selectedStepSession = null }.padding(bottom = 16.dp), verticalAlignment = Alignment.CenterVertically) {
-                                            Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = primaryColor)
-                                            Spacer(modifier = Modifier.width(8.dp))
-                                            Text("Back to Sessions", color = primaryColor, fontWeight = FontWeight.Bold)
-                                        }
-
-                                        PerformanceDashboard(
-                                            title = "Performance Dashboard",
-                                            metrics = recentData,
-                                            personalBest = pb,
-                                            primaryColor = primaryColor
-                                        )
-
-                                        Spacer(modifier = Modifier.height(16.dp))
-
-                                        Card(modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp), colors = CardDefaults.cardColors(containerColor = Color(0xFFF5F5F5))) {
-                                            Column(modifier = Modifier.padding(16.dp).fillMaxWidth()) {
-                                                Row(horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
-                                                    Text("Cognitive Score", color = Color.DarkGray, fontWeight = FontWeight.Bold, fontSize = 20.sp)
-                                                    Text("${session.score}", color = primaryColor, fontWeight = FontWeight.Bold, fontSize = 20.sp)
-                                                }
-                                                Spacer(modifier = Modifier.height(8.dp))
-                                                Text("✅ Correct Selections: ${session.correctHits}", color = Color(0xFF4CAF50))
-                                                Text("❌ Incorrect Selections: ${session.incorrectHits}", color = Color.Red)
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-
-                            else -> {
-                                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                                    Text(text = "Select a valid module.", color = Color.Gray)
                                 }
                             }
                         }
@@ -1445,8 +2167,50 @@ fun GraphViewScreen(
 }
 
 // ==========================================
-// NEW OVERVIEW COMPONENTS
+// HELPER COMPONENTS
 // ==========================================
+
+@Composable
+fun InfoSection(text: String) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(bottom = 16.dp)
+            .background(Color(0xFFF5F5F5), RoundedCornerShape(8.dp))
+            .padding(12.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(Icons.Default.Info, contentDescription = "Info", tint = Color.Gray, modifier = Modifier.size(16.dp))
+        Spacer(modifier = Modifier.width(8.dp))
+        Text(text = text, fontSize = 12.sp, color = Color.DarkGray)
+    }
+}
+
+@Composable
+fun GameMiniCard(title: String, scoreText: String, subText: String, isSuccess: Boolean = true, onClick: () -> Unit) {
+    Card(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp).clickable { onClick() },
+        colors = CardDefaults.cardColors(containerColor = Color(0xFFFAFAFA)),
+        border = BorderStroke(1.dp, Color(0xFFEEEEEE))
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(16.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column {
+                Text(text = title, fontWeight = FontWeight.Bold, color = Color.DarkGray, fontSize = 16.sp)
+                Text(text = subText, color = Color.Gray, fontSize = 12.sp)
+            }
+            Text(
+                text = scoreText,
+                fontWeight = FontWeight.Bold,
+                color = if(isSuccess) Color(0xFF4A44D4) else Color.Red,
+                fontSize = 16.sp
+            )
+        }
+    }
+}
 
 @Composable
 fun ClinicalRadarChart(currentScores: List<Float>, prevScores: List<Float>, labels: List<String>, primaryColor: Color) {
@@ -1455,14 +2219,13 @@ fun ClinicalRadarChart(currentScores: List<Float>, prevScores: List<Float>, labe
         val centerY = size.height / 2
         val maxRadius = size.width / 2.5f
 
-        // Draw grid
+        val n = labels.size.coerceAtLeast(3)
         for (i in 1..4) {
             val r = maxRadius * (i / 4f)
             drawCircle(color = Color.LightGray.copy(alpha = 0.5f), radius = r, center = Offset(centerX, centerY), style = Stroke(width = 1.dp.toPx()))
         }
 
-        // Draw axes & labels
-        val angles = listOf(-Math.PI / 2, Math.PI / 6, 5 * Math.PI / 6) // Top, Bottom Right, Bottom Left
+        val angles = List(n) { i -> -Math.PI / 2 + (2 * Math.PI * i / n).toFloat() }
 
         val textPaint = Paint().apply {
             color = android.graphics.Color.DKGRAY
@@ -1476,13 +2239,11 @@ fun ClinicalRadarChart(currentScores: List<Float>, prevScores: List<Float>, labe
             val endY = centerY + (maxRadius * sin(angle)).toFloat()
             drawLine(color = Color.LightGray, start = Offset(centerX, centerY), end = Offset(endX, endY), strokeWidth = 2f)
 
-            // Draw Label slightly outside
             val labelX = centerX + (maxRadius * 1.2f * cos(angle)).toFloat()
             val labelY = centerY + (maxRadius * 1.2f * sin(angle)).toFloat()
             drawContext.canvas.nativeCanvas.drawText(labels[index], labelX, labelY + 12f, textPaint)
         }
 
-        // Helper to build path
         fun buildRadarPath(scores: List<Float>): Path {
             val path = Path()
             scores.forEachIndexed { index, score ->
@@ -1495,20 +2256,17 @@ fun ClinicalRadarChart(currentScores: List<Float>, prevScores: List<Float>, labe
             return path
         }
 
-        // Draw Previous (Gray)
         if (prevScores.isNotEmpty() && prevScores.any { it > 0f }) {
             val prevPath = buildRadarPath(prevScores)
             drawPath(path = prevPath, color = Color.Gray.copy(alpha = 0.2f))
             drawPath(path = prevPath, color = Color.Gray.copy(alpha = 0.8f), style = Stroke(width = 4f))
         }
 
-        // Draw Current (Primary Color)
         if (currentScores.isNotEmpty() && currentScores.any { it > 0f }) {
             val currPath = buildRadarPath(currentScores)
             drawPath(path = currPath, color = primaryColor.copy(alpha = 0.3f))
             drawPath(path = currPath, color = primaryColor, style = Stroke(width = 6f, join = StrokeJoin.Round))
 
-            // Dots
             currentScores.forEachIndexed { index, score ->
                 val r = maxRadius * score.coerceIn(0f, 1f)
                 val x = centerX + (r * cos(angles[index])).toFloat()
@@ -1526,7 +2284,6 @@ fun CombinedHeatmap(staticResult: StaticBalanceResult?, patternResult: PatternDr
         val centerY = size.height / 2
         val outerRadius = size.width / 2.2f
 
-        // Background limits
         drawCircle(color = Color.LightGray.copy(alpha = 0.3f), radius = outerRadius, center = Offset(centerX, centerY), style = Stroke(width = 2f))
         drawLine(color = Color.LightGray, start = Offset(centerX - outerRadius, centerY), end = Offset(centerX + outerRadius, centerY))
         drawLine(color = Color.LightGray, start = Offset(centerX, centerY - outerRadius), end = Offset(centerX, centerY + outerRadius))
@@ -1566,10 +2323,6 @@ fun HeatmapLegendItem(label: String, color: Color) {
         Text(text = label, fontSize = 12.sp, color = Color.DarkGray, fontWeight = FontWeight.Bold)
     }
 }
-
-// ==========================================
-// DASHBOARD COMPONENTS
-// ==========================================
 
 @Composable
 fun GameSelectorDropdown(
@@ -1632,12 +2385,23 @@ fun GameSelectorDropdown(
 }
 
 @Composable
-fun SessionSummaryBanner(dateString: String, posture: String, level: Int) {
-    val isStanding = posture.equals("STANDING", ignoreCase = true)
-    val bgColor = if (isStanding) Color(0xFFE3F2FD) else Color(0xFFFFF3E0)
-    val textColor = if (isStanding) Color(0xFF1565C0) else Color(0xFFE65100)
+fun SessionSummaryBanner(dateString: String, posture: String?, level: Int?) {
+    val hasPosture = posture != null && posture != "Unknown"
+    val isStanding = posture?.equals("STANDING", ignoreCase = true) == true
 
-    val levelText = if (posture.equals("SITTING", ignoreCase = true)) "" else " • LVL $level"
+    val bgColor = if (hasPosture) {
+        if (isStanding) Color(0xFFE3F2FD) else Color(0xFFFFF3E0)
+    } else {
+        Color(0xFFF3E5F5)
+    }
+
+    val textColor = if (hasPosture) {
+        if (isStanding) Color(0xFF1565C0) else Color(0xFFE65100)
+    } else {
+        Color(0xFF6A1B9A)
+    }
+
+    val levelText = if (hasPosture && !posture!!.equals("SITTING", ignoreCase = true)) " • LVL $level" else ""
 
     Card(
         modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp),
@@ -1654,9 +2418,17 @@ fun SessionSummaryBanner(dateString: String, posture: String, level: Int) {
                 Text("Session Info", color = textColor.copy(alpha = 0.7f), fontSize = 10.sp, fontWeight = FontWeight.Bold)
                 Text(dateString, color = Color.DarkGray, fontSize = 14.sp, fontWeight = FontWeight.Bold)
             }
-            Column(horizontalAlignment = Alignment.End) {
-                Text("Posture & Level", color = textColor.copy(alpha = 0.7f), fontSize = 10.sp, fontWeight = FontWeight.Bold)
-                Text("${posture.uppercase()}$levelText", color = textColor, fontSize = 14.sp, fontWeight = FontWeight.ExtraBold)
+
+            if (hasPosture) {
+                Column(horizontalAlignment = Alignment.End) {
+                    Text("Posture & Level", color = textColor.copy(alpha = 0.7f), fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                    Text("${posture!!.uppercase()}$levelText", color = textColor, fontSize = 14.sp, fontWeight = FontWeight.ExtraBold)
+                }
+            } else {
+                Column(horizontalAlignment = Alignment.End) {
+                    Text("Session Mode", color = textColor.copy(alpha = 0.7f), fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                    Text("GAMIFICATION", color = textColor, fontSize = 14.sp, fontWeight = FontWeight.ExtraBold)
+                }
             }
         }
     }
@@ -1792,7 +2564,6 @@ fun ClinicalErrorBarChart(title: String, errors: List<Float>, barLabelPrefix: St
             }
 
             Row(modifier = Modifier.fillMaxSize()) {
-                // Y-Axis labels
                 Column(
                     modifier = Modifier.fillMaxHeight().padding(bottom = 20.dp, end = 8.dp),
                     verticalArrangement = Arrangement.SpaceBetween,
@@ -1803,7 +2574,6 @@ fun ClinicalErrorBarChart(title: String, errors: List<Float>, barLabelPrefix: St
                     Text("0°", fontSize = 10.sp, color = Color.Gray)
                 }
 
-                // Bars and X-Axis
                 Box(modifier = Modifier.weight(1f).fillMaxHeight()) {
                     Column(modifier = Modifier.fillMaxSize().padding(bottom = 20.dp), verticalArrangement = Arrangement.SpaceBetween) {
                         HorizontalDivider(color = Color.LightGray.copy(alpha = 0.5f))
@@ -2073,45 +2843,5 @@ fun SegmentedToggle(
                 )
             }
         }
-    }
-}
-
-@Composable
-fun MiniLineGraph(data: List<Float>, lineColor: Color) {
-    if (data.isEmpty()) {
-        Text("No data points recorded", fontSize = 10.sp, color = Color.LightGray, modifier = Modifier.padding(4.dp))
-        return
-    }
-
-    Canvas(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(100.dp)
-            .background(Color(0xFFFAFAFA), RoundedCornerShape(8.dp))
-            .clip(RoundedCornerShape(8.dp))
-            .padding(8.dp)
-    ) {
-        val max = data.maxOrNull() ?: 0f
-        val min = data.minOrNull() ?: 0f
-        val range = (max - min).coerceAtLeast(0.1f)
-
-        val path = Path()
-        val stepX = size.width / (data.size.coerceAtLeast(2) - 1)
-
-        data.forEachIndexed { index, value ->
-            val x = index * stepX
-            val y = size.height - ((value - min) / range * size.height)
-            if (index == 0) {
-                path.moveTo(x, y)
-            } else {
-                path.lineTo(x, y)
-            }
-        }
-
-        drawPath(
-            path = path,
-            color = lineColor,
-            style = Stroke(width = 2.dp.toPx())
-        )
     }
 }

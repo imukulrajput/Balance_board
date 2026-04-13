@@ -1,5 +1,6 @@
 package com.ripplehealthcare.bproboard.ui.screens
 
+import androidx.compose.foundation.Image
 import com.ripplehealthcare.bproboard.ui.viewmodel.ManagementViewModel
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -8,6 +9,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccountCircle
+import androidx.compose.material.icons.filled.Dashboard
 import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.PersonAdd
@@ -21,11 +23,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.navigation.NavController
+import com.ripplehealthcare.bproboard.R
 import com.ripplehealthcare.bproboard.ui.components.BottomNavigation
 import com.ripplehealthcare.bproboard.ui.theme.CardColor
 import com.ripplehealthcare.bproboard.ui.theme.PrimaryColor
@@ -205,4 +209,33 @@ fun DashboardActionButton(
             }
         }
     }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun TopBar( navController: NavController) {
+    TopAppBar(
+        title = {
+            Image(
+                painter = painterResource(id = R.drawable.frst_logo),
+                contentDescription = "FRST Logo",
+                modifier = Modifier.height(24.dp)
+            )
+        },
+        actions = {
+            IconButton(onClick = { navController.navigate("main"){
+                popUpTo("main")
+            } }) {
+                Icon(
+                    modifier = Modifier.size(32.dp),
+                    imageVector = Icons.Default.Dashboard,
+                    contentDescription = "Notifications",
+                    tint = Color.Gray
+                )
+            }
+        },
+        colors = TopAppBarDefaults.topAppBarColors(
+            containerColor = Color.Transparent
+        )
+    )
 }

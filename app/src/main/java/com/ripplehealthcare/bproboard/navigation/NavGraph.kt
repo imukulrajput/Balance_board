@@ -88,67 +88,15 @@ fun AppNavHost(
                 )
             }
 
-//            composable("home") {
-//                DashboardScreen(navController,authViewModel,patientViewModel,testViewModel)
-//            }
-            composable(
-                route = "patient_detail/{patientId}",
-                arguments = listOf(navArgument("patientId") { type = NavType.StringType })
-            ) { backStackEntry ->
-                // Extract the ID from the arguments
-                val patientId = backStackEntry.arguments?.getString("patientId")
-                requireNotNull(patientId) { "Patient ID is required" }
-
-                // Pass the extracted ID to your screen
-                PatientDashboardScreen(
-                    navController = navController,
-                    patientId = patientId,
-                    patientViewModel = patientViewModel,
-                    managementViewModel = managementViewModel,
-                    bluetoothViewModel = bluetoothViewModel,
-                    testViewModel = testViewModel
-                )
-            }
             composable("profile") {
                 ProfileScreen(navController,authViewModel)
             }
             composable("patientList"){
                 PatientListScreen(navController,managementViewModel,testViewModel,patientViewModel)
             }
-            composable("calibration") {
-                CalibrationSelectionScreen(navController, bluetoothViewModel, testViewModel)
-            }
-            composable("standingCalibration") {
-                StandingCalibrationScreen(navController, bluetoothViewModel, testViewModel)
-            }
-            composable("sittingCalibration") {
-                SittingCalibrationScreen(navController, bluetoothViewModel, testViewModel)
-            }
 
-            composable("walkCalibration"){
-                WalkCalibrationScreen(navController,bluetoothViewModel)
-            }
-            composable("sessionDashboard") {
-                SessionDashboardScreen(navController, testViewModel, patientViewModel, bluetoothViewModel)
-            }
             composable("testing"){
                 TestingScreen(navController,bluetoothViewModel)
-            }
-            composable(
-                route = "testInstruction/{testId}",
-                arguments = listOf(navArgument("testId") { type = NavType.StringType })
-            ) { backStackEntry ->
-                val testId = backStackEntry.arguments?.getString("testId")
-                TestInstructionScreen(navController, testId, bluetoothViewModel, testViewModel)
-            }
-            composable("fourStage"){
-                FourStageTestSelectionScreen(navController,testViewModel,bluetoothViewModel, patientViewModel)
-            }
-            composable("tug"){
-                TUGTestScreen(navController,bluetoothViewModel,testViewModel, patientViewModel)
-            }
-            composable("sitToStandTest"){
-                SitToStandTestScreen(navController,bluetoothViewModel,testViewModel, patientViewModel)
             }
             composable("gameSelection"){
                 GameSelectionScreen(
@@ -157,21 +105,13 @@ fun AppNavHost(
                     testViewModel = testViewModel // Pass the new parameter here
                 )
             }
-            composable("endlessRunner"){
-                EndlessRunnerGame(navController, bluetoothViewModel)
-            }
-            composable("spaceDebris") {
-                SpaceDebrisGame(navController, bluetoothViewModel)
-            }
             composable("starship") {
                 StarshipDefenderGame(navController, bluetoothViewModel , testViewModel = testViewModel )
             }
             composable("colorsorter") {
                 ColorSorterGame(navController, bluetoothViewModel, testViewModel = testViewModel)
             }
-            composable("rockClimbing") {
-                RockClimbingGame(navController, bluetoothViewModel)
-            }
+
             composable("ratPuzzle") {
                 RatPuzzleGame(navController, bluetoothViewModel,testViewModel = testViewModel)
             }
@@ -191,58 +131,16 @@ fun AppNavHost(
                 PatternDrawingScreen(navController, bluetoothViewModel , testViewModel = testViewModel)
             }
             composable("trainingModeSelection") {
-                TrainingModeScreen(navController)
+                TrainingModeScreen(navController,testViewModel = testViewModel)
             }
             composable("gameModeSelection") {
-                // You can duplicate the TrainingModeScreen code to create GameModeScreen
-                GameModeScreen(navController)
+                GameModeScreen(navController,testViewModel = testViewModel)
             }
             composable("graphViewSelection") {
                 GraphViewScreen(navController,testViewModel = testViewModel)
             }
             composable("boardSetup") {
                 BoardSetupScreen(navController, bluetoothViewModel)
-            }
-
-
-
-
-
-
-            composable("sessionReport"){
-                SessionReportScreen(navController,testViewModel)
-            }
-            composable("fourStageInstruction/{stageId}") { backStackEntry ->
-                val stageId = backStackEntry.arguments?.getString("stageId")
-                // Show instruction screen for specific stage
-                FourStageInstructionScreen(navController, stageId, bluetoothViewModel)
-
-            }
-            composable("result") {
-                ResultScreen(navController, testViewModel)
-            }
-            composable("reportSelection") {
-                TestsHistoryScreen(navController,patientViewModel,testViewModel)
-            }
-            composable("fourStageReport") {
-                FourStageReportScreen(navController, testViewModel)
-            }
-            composable(
-                route = "stsReport/{testType}",
-                arguments = listOf(navArgument("testType") { type = NavType.StringType })
-            ) { backStackEntry ->
-                val testTypeStr = backStackEntry.arguments?.getString("testType") ?: "FIVE_REPS"
-                SitToStandReportScreen(
-                    navController = navController,
-                    testViewModel = testViewModel, // Shared ViewModel
-                    testTypeStr = testTypeStr
-                )
-            }
-            composable("tugReport") {
-                TugReportScreen(navController, testViewModel)
-            }
-            composable("game") {
-                FourStageTestScreen(navController, bluetoothViewModel,testViewModel, patientViewModel)
             }
         }
     }

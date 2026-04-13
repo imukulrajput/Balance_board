@@ -108,7 +108,7 @@ fun PatternDrawingScreen(
 
     val stopAndSaveData = {
         val result = PatternDrawingResult(
-            sessionId = java.util.UUID.randomUUID().toString(),
+            sessionId = testViewModel.activeSessionId ?: java.util.UUID.randomUUID().toString(),
             patientId = testViewModel.patient.value.patientId,
             gameMode = gameMode.name,
             level = currentLevel,
