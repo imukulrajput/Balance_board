@@ -103,7 +103,7 @@ fun PatternDrawingScreen(
 
     val frontalDataPoints = remember { mutableListOf<Float>() }
     val sagittalDataPoints = remember { mutableListOf<Float>() }
-    val angularErrors = remember { mutableStateListOf<Float>() } // <--- ANGULAR ERROR TRACKER
+    val angularErrors = remember { mutableStateListOf<Float>() }
     var lastSampleTime by remember { mutableLongStateOf(0L) }
 
     val stopAndSaveData = {

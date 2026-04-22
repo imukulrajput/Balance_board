@@ -1,22 +1,30 @@
 package com.ripplehealthcare.bproboard.ui.screens
 
 import android.graphics.Paint
+import android.widget.Toast
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.ArrowForward
+import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -33,6 +41,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -41,6 +50,7 @@ import androidx.compose.ui.unit.sp
 import androidx.navigation.NavController
 import com.ripplehealthcare.bproboard.domain.model.*
 import com.ripplehealthcare.bproboard.ui.viewmodel.TestViewModel
+import com.ripplehealthcare.bproboard.util.ClinicalReportPdfManager
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -80,6 +90,9 @@ data class GroupedSession(
             holePuzzleResults.size + stepGameResults.size
 
     val totalFalls = staticResults.sumOf { it.fallCount } + patternResults.sumOf { it.fallCount } + shapeResults.sumOf { it.fallCount }
+
+    val totalTimeMs = staticResults.sumOf { it.totalTimeMs } + patternResults.sumOf { it.timeTakenMs } + shapeResults.sumOf { it.timeTakenMs } +
+            ratPuzzleResults.sumOf { it.timeTakenMs } + starshipResults.sumOf { it.timeSurvivedMs } + holePuzzleResults.sumOf { it.timeSurvivedMs }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -88,6 +101,7 @@ fun GraphViewScreen(
     navController: NavController,
     testViewModel: TestViewModel
 ) {
+    val context = LocalContext.current
     val patient by testViewModel.patient.collectAsState()
     val staticBalanceResults by testViewModel.staticBalanceResults.collectAsState()
     val patternDrawingResults by testViewModel.patternDrawingResults.collectAsState()
@@ -244,6 +258,7 @@ fun GraphViewScreen(
             .background(backgroundGradient)
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
+
             GraphTopBar(
                 onBackClick = { navController.popBackStack() },
                 onSaveClick = { },
@@ -269,22 +284,6 @@ fun GraphViewScreen(
                                 clearDetailedSessions()
                                 selectedGroupedSession = null
                                 selectedOverviewSession = null
-                            }
-                        },
-                        primaryColor = primaryColor
-                    )
-                }
-
-                // Dropdown (Hidden when in Session Mode)
-                if (selectedMode != "Session") {
-                    Spacer(modifier = Modifier.height(12.dp))
-                    GameSelectorDropdown(
-                        items = currentList,
-                        selectedItem = selectedGame,
-                        onItemSelected = {
-                            if (selectedGame != it) {
-                                selectedGame = it
-                                clearDetailedSessions()
                             }
                         },
                         primaryColor = primaryColor
@@ -327,34 +326,13 @@ fun GraphViewScreen(
                                     Text("No sessions recorded yet.", color = Color.Gray)
                                 }
                             } else if (selectedGroupedSession == null) {
-                                // --- LIST ALL SESSIONS ---
-                                Column(modifier = Modifier.fillMaxSize()) {
-                                    Text("Patient Clinical Visits", fontWeight = FontWeight.Bold, color = primaryColor, fontSize = 18.sp, modifier = Modifier.padding(bottom = 16.dp))
-                                    LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                                        items(groupedSessions) { session ->
-                                            Card(
-                                                modifier = Modifier.fillMaxWidth().clickable { selectedGroupedSession = session },
-                                                colors = CardDefaults.cardColors(containerColor = Color(0xFFF0F4F8)),
-                                                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
-                                            ) {
-                                                Row(
-                                                    modifier = Modifier.padding(16.dp).fillMaxWidth(),
-                                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                                    verticalAlignment = Alignment.CenterVertically
-                                                ) {
-                                                    Column {
-                                                        Text(text = fullDateFormatter.format(session.timestamp), fontWeight = FontWeight.Bold, fontSize = 16.sp, color = Color.Black)
-                                                        Text(text = "${session.totalModulesPlayed} Modules Completed", fontSize = 14.sp, color = Color.DarkGray)
-                                                    }
-                                                    Column(horizontalAlignment = Alignment.End) {
-                                                        Text("Total Falls", fontSize = 10.sp, color = Color.Gray)
-                                                        Text(text = "${session.totalFalls}", fontWeight = FontWeight.Bold, color = if (session.totalFalls > 0) Color.Red else Color(0xFF4CAF50), fontSize = 18.sp)
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
+                                // --- UNIFIED PATIENT JOURNEY DASHBOARD ---
+                                PatientJourneyDashboard(
+                                    groupedSessions = groupedSessions,
+                                    primaryColor = primaryColor,
+                                    fullDateFormatter = fullDateFormatter,
+                                    onSessionClick = { selectedGroupedSession = it }
+                                )
                             } else {
                                 // --- SESSION DETAIL REPORT ---
                                 val session = selectedGroupedSession!!
@@ -407,7 +385,7 @@ fun GraphViewScreen(
                                     Row(modifier = Modifier.clickable { selectedGroupedSession = null }.padding(bottom = 16.dp), verticalAlignment = Alignment.CenterVertically) {
                                         Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = primaryColor)
                                         Spacer(modifier = Modifier.width(8.dp))
-                                        Text("Back to Visits", color = primaryColor, fontWeight = FontWeight.Bold)
+                                        Text("Back to Journey", color = primaryColor, fontWeight = FontWeight.Bold)
                                     }
 
                                     SessionSummaryBanner(dateString = fullDateFormatter.format(session.timestamp), posture = displayPosture, level = displayLevel)
@@ -550,6 +528,16 @@ fun GraphViewScreen(
                                             })
                                         }
                                     }
+
+                                    ReportActionButtons(
+                                        primaryColor = primaryColor,
+                                        onShareClick = {
+                                            ClinicalReportPdfManager.generateAndSharePdf(context, patient, session, true)
+                                        },
+                                        onDownloadClick = {
+                                            ClinicalReportPdfManager.generateAndSharePdf(context, patient, session, false)
+                                        }
+                                    )
                                 }
                             }
                         } else {
@@ -572,7 +560,7 @@ fun GraphViewScreen(
                                             }
                                         } else if (selectedOverviewSession == null) {
                                             // Enhanced List View with Summary
-                                            Column(modifier = Modifier.fillMaxSize()) {
+                                            Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
                                                 Text("Training Overview", fontWeight = FontWeight.Bold, color = primaryColor, fontSize = 20.sp, modifier = Modifier.padding(bottom = 8.dp))
 
                                                 // Calculate Summaries
@@ -604,6 +592,8 @@ fun GraphViewScreen(
                                                     if(latest > previous) "📈 Improving" else if(latest < previous) "📉 Declining" else "➡️ Stable"
                                                 } else "➡️ Baseline"
 
+                                                val chronologicalScores = avgScores.take(10).reversed().map { it.toFloat() }
+
                                                 Card(
                                                     modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp),
                                                     colors = CardDefaults.cardColors(containerColor = Color(0xFFF3E5F5)),
@@ -613,8 +603,9 @@ fun GraphViewScreen(
                                                         Text("All-Time Training Metrics", fontWeight = FontWeight.Bold, color = Color(0xFF6A1B9A), fontSize = 16.sp, modifier = Modifier.padding(bottom = 12.dp))
                                                         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                                                             StatBox("Sessions", "$totalTrainingSessions", Color.DarkGray)
-                                                            StatBox("Total Time", "${totalTrainingTimeSecs.toInt()}s", Color.DarkGray)
                                                             StatBox("Avg Score", "${overallAvgScore.toInt()}/100", primaryColor)
+                                                            StatBox("Total Time", "${totalTrainingTimeSecs.toInt()}s", Color.DarkGray)
+
                                                         }
                                                         Spacer(modifier = Modifier.height(12.dp))
                                                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -625,33 +616,100 @@ fun GraphViewScreen(
                                                     }
                                                 }
 
+                                                // --- NEW: TREND CHART ---
+                                                PerformanceTrendChart(scores = chronologicalScores, targetScore = 80f, primaryColor = primaryColor)
+
+                                                // --- NEW: MODULE BREAKDOWN ---
+                                                Card(
+                                                    modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp),
+                                                    colors = CardDefaults.cardColors(containerColor = Color.White),
+                                                    elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+                                                ) {
+                                                    Column(modifier = Modifier.padding(16.dp)) {
+                                                        Text("Module Breakdown", fontWeight = FontWeight.Bold, color = primaryColor, fontSize = 16.sp, modifier = Modifier.padding(bottom = 12.dp))
+
+                                                        // NEW: Column Headers
+                                                        Row(
+                                                            modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp),
+                                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                                            verticalAlignment = Alignment.CenterVertically
+                                                        ) {
+                                                            Text("MODULE", color = Color.Gray, fontSize = 10.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(2f))
+                                                            Text("PLAYS", color = Color.Gray, fontSize = 10.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1.2f), textAlign = TextAlign.Center)
+                                                            Text("TIME", color = Color.Gray, fontSize = 10.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1.2f), textAlign = TextAlign.Center)
+                                                            Text("SCORE", color = Color.Gray, fontSize = 10.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1.5f), textAlign = TextAlign.End)
+                                                            Spacer(modifier = Modifier.width(20.dp)) // Aligns with the arrow icon
+                                                        }
+                                                        Spacer(modifier = Modifier.height(8.dp))
+
+                                                        BreakdownRow(
+                                                            title = "Static Balance",
+                                                            plays = staticBalanceResults.size,
+                                                            timeStr = "${staticBalanceResults.sumOf { it.totalTimeMs } / 1000L}s",
+                                                            scoreStr = "${if(staticBalanceResults.isNotEmpty()) staticBalanceResults.map{it.efficiencyPercentage}.average().toInt() else 0}% Avg",
+                                                            color = primaryColor,
+                                                            onClick = { selectedGame = "Static Balance" }
+                                                        )
+
+                                                        BreakdownRow(
+                                                            title = "Pattern Drawing",
+                                                            plays = patternDrawingResults.size,
+                                                            timeStr = "${patternDrawingResults.sumOf { it.timeTakenMs } / 1000L}s",
+                                                            scoreStr = "${if(patternDrawingResults.isNotEmpty()) patternDrawingResults.map{ if(it.totalTargets>0) (it.targetsHit.toFloat()/it.totalTargets)*100 else 0f }.average().toInt() else 0}% Avg",
+                                                            color = primaryColor,
+                                                            onClick = { selectedGame = "Pattern Drawing" }
+                                                        )
+
+                                                        BreakdownRow(
+                                                            title = "Shape Training",
+                                                            plays = shapeTrainingResults.size,
+                                                            timeStr = "${shapeTrainingResults.sumOf { it.timeTakenMs } / 1000L}s",
+                                                            scoreStr = "${if(shapeTrainingResults.isNotEmpty()) shapeTrainingResults.map{it.score}.average().toInt() else 0} pts",
+                                                            color = primaryColor,
+                                                            onClick = { selectedGame = "Shape Training" }
+                                                        )
+                                                    }
+                                                }
+
                                                 Text("Select a Training Session", fontWeight = FontWeight.Bold, color = Color.DarkGray, fontSize = 16.sp, modifier = Modifier.padding(bottom = 12.dp))
 
-                                                LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                                                    items(trainingSessions) { session ->
-                                                        Card(
-                                                            modifier = Modifier.fillMaxWidth().clickable { selectedOverviewSession = session },
-                                                            colors = CardDefaults.cardColors(containerColor = Color(0xFFF0F4F8)),
-                                                            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+                                                trainingSessions.forEach { session ->
+                                                    Card(
+                                                        modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp).clickable { selectedOverviewSession = session },
+                                                        colors = CardDefaults.cardColors(containerColor = Color(0xFFF0F4F8)),
+                                                        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+                                                    ) {
+                                                        Row(
+                                                            modifier = Modifier.padding(16.dp).fillMaxWidth(),
+                                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                                            verticalAlignment = Alignment.CenterVertically
                                                         ) {
-                                                            Row(
-                                                                modifier = Modifier.padding(16.dp).fillMaxWidth(),
-                                                                horizontalArrangement = Arrangement.SpaceBetween,
-                                                                verticalAlignment = Alignment.CenterVertically
-                                                            ) {
-                                                                Column {
-                                                                    Text(text = fullDateFormatter.format(session.timestamp), fontWeight = FontWeight.Bold, fontSize = 16.sp, color = Color.Black)
+                                                            Column {
+                                                                Text(text = fullDateFormatter.format(session.timestamp), fontWeight = FontWeight.Bold, fontSize = 16.sp, color = Color.Black)
 
-                                                                    val moduleCount = (if(session.staticResults.isNotEmpty()) 1 else 0) +
-                                                                            (if(session.patternResults.isNotEmpty()) 1 else 0) +
-                                                                            (if(session.shapeResults.isNotEmpty()) 1 else 0)
-                                                                    Text(text = "$moduleCount Training Modules Played", fontSize = 14.sp, color = Color.DarkGray)
-                                                                }
-                                                                Icon(Icons.Default.ArrowForward, contentDescription = "View Report", tint = primaryColor)
+                                                                val moduleCount = (if(session.staticResults.isNotEmpty()) 1 else 0) +
+                                                                        (if(session.patternResults.isNotEmpty()) 1 else 0) +
+                                                                        (if(session.shapeResults.isNotEmpty()) 1 else 0)
+                                                                Text(text = "$moduleCount Training Modules Played", fontSize = 14.sp, color = Color.DarkGray)
                                                             }
+                                                            Icon(Icons.Default.ArrowForward, contentDescription = "View Report", tint = primaryColor)
                                                         }
                                                     }
                                                 }
+
+                                                ReportActionButtons(
+                                                    primaryColor = primaryColor,
+                                                    onShareClick = {
+                                                        trainingSessions.firstOrNull()?.let { session ->
+                                                            ClinicalReportPdfManager.generateAndSharePdf(context, patient, session, true)
+                                                        } ?: Toast.makeText(context, "No session data available", Toast.LENGTH_SHORT).show()
+                                                    },
+                                                    onDownloadClick = {
+                                                        trainingSessions.firstOrNull()?.let { session ->
+                                                            ClinicalReportPdfManager.generateAndSharePdf(context, patient, session, false)
+                                                        } ?: Toast.makeText(context, "No session data available", Toast.LENGTH_SHORT).show()
+                                                    }
+                                                )
                                             }
                                         } else {
                                             val session = selectedOverviewSession!!
@@ -776,6 +834,16 @@ fun GraphViewScreen(
                                                         }
                                                     }
                                                 }
+
+                                                ReportActionButtons(
+                                                    primaryColor = primaryColor,
+                                                    onShareClick = {
+                                                        ClinicalReportPdfManager.generateAndSharePdf(context, patient, session, true)
+                                                    },
+                                                    onDownloadClick = {
+                                                        ClinicalReportPdfManager.generateAndSharePdf(context, patient, session, false)
+                                                    }
+                                                )
                                             }
                                         }
                                     } else if (selectedMode == "Game") {
@@ -791,7 +859,7 @@ fun GraphViewScreen(
                                             }
                                         } else if (selectedOverviewSession == null) {
                                             // Enhanced List View with Summary for Games
-                                            Column(modifier = Modifier.fillMaxSize()) {
+                                            Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
                                                 Text("Game Overview", fontWeight = FontWeight.Bold, color = primaryColor, fontSize = 20.sp, modifier = Modifier.padding(bottom = 8.dp))
 
                                                 val totalGameSessions = gameSessions.size
@@ -826,6 +894,8 @@ fun GraphViewScreen(
                                                     if(latest > previous) "📈 Improving" else if(latest < previous) "📉 Declining" else "➡️ Stable"
                                                 } else "➡️ Baseline"
 
+                                                val chronologicalScores = avgScores.take(10).reversed().map { it.toFloat() }
+
                                                 Card(
                                                     modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp),
                                                     colors = CardDefaults.cardColors(containerColor = Color(0xFFE8EAF6)),
@@ -835,8 +905,9 @@ fun GraphViewScreen(
                                                         Text("All-Time Gamification Metrics", fontWeight = FontWeight.Bold, color = primaryColor, fontSize = 16.sp, modifier = Modifier.padding(bottom = 12.dp))
                                                         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                                                             StatBox("Sessions", "$totalGameSessions", Color.DarkGray)
-                                                            StatBox("Survival Time", "${totalGameTimeSecs.toInt()}s", Color.DarkGray)
                                                             StatBox("Avg Score", "${overallAvgScore.toInt()}/100", primaryColor)
+                                                            StatBox("Survival Time", "${totalGameTimeSecs.toInt()}s", Color.DarkGray)
+
                                                         }
                                                         Spacer(modifier = Modifier.height(12.dp))
                                                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -847,33 +918,115 @@ fun GraphViewScreen(
                                                     }
                                                 }
 
+                                                PerformanceTrendChart(scores = chronologicalScores, targetScore = 80f, primaryColor = primaryColor)
+
+                                                Card(
+                                                    modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp),
+                                                    colors = CardDefaults.cardColors(containerColor = Color.White),
+                                                    elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+                                                ) {
+                                                    Column(modifier = Modifier.padding(16.dp)) {
+                                                        Text("Game Breakdown", fontWeight = FontWeight.Bold, color = primaryColor, fontSize = 16.sp, modifier = Modifier.padding(bottom = 12.dp))
+
+                                                        Row(
+                                                            modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp),
+                                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                                            verticalAlignment = Alignment.CenterVertically
+                                                        ) {
+                                                            Text("GAME", color = Color.Gray, fontSize = 10.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(2f))
+                                                            Text("PLAYS", color = Color.Gray, fontSize = 10.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1.2f), textAlign = TextAlign.Center)
+                                                            Text("TIME", color = Color.Gray, fontSize = 10.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1.2f), textAlign = TextAlign.Center)
+                                                            Text("SCORE", color = Color.Gray, fontSize = 10.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1.5f), textAlign = TextAlign.End)
+                                                            Spacer(modifier = Modifier.width(20.dp))
+                                                        }
+                                                        Spacer(modifier = Modifier.height(8.dp))
+
+                                                        BreakdownRow(
+                                                            title = "Color Sorter",
+                                                            plays = colorSorterResults.size,
+                                                            timeStr = "-",
+                                                            scoreStr = "${if(colorSorterResults.isNotEmpty()) colorSorterResults.map{it.score}.average().toInt() else 0} pts",
+                                                            color = primaryColor,
+                                                            onClick = { selectedGame = "Color Sorter" }
+                                                        )
+
+                                                        BreakdownRow(
+                                                            title = "Maze Balance",
+                                                            plays = ratPuzzleResults.size,
+                                                            timeStr = "${ratPuzzleResults.sumOf { it.timeTakenMs } / 1000L}s",
+                                                            scoreStr = "${if(ratPuzzleResults.isNotEmpty()) (ratPuzzleResults.count{it.isWin}.toFloat()/ratPuzzleResults.size*100).toInt() else 0}% Win",
+                                                            color = primaryColor,
+                                                            onClick = { selectedGame = "Rat Puzzle" }
+                                                        )
+
+                                                        BreakdownRow(
+                                                            title = "Starship Def.",
+                                                            plays = starshipResults.size,
+                                                            timeStr = "${starshipResults.sumOf { it.timeSurvivedMs } / 1000L}s",
+                                                            scoreStr = "${if(starshipResults.isNotEmpty()) starshipResults.map{it.score}.average().toInt() else 0} pts",
+                                                            color = primaryColor,
+                                                            onClick = { selectedGame = "Starship Defender" }
+                                                        )
+
+                                                        BreakdownRow(
+                                                            title = "Hole Navigator",
+                                                            plays = holePuzzleResults.size,
+                                                            timeStr = "${holePuzzleResults.sumOf { it.timeSurvivedMs } / 1000L}s",
+                                                            scoreStr = "${if(holePuzzleResults.isNotEmpty()) holePuzzleResults.map{it.score}.average().toInt() else 0} pts",
+                                                            color = primaryColor,
+                                                            onClick = { selectedGame = "Hole Navigator" }
+                                                        )
+
+                                                        BreakdownRow(
+                                                            title = "Cog. Stepping",
+                                                            plays = stepGameResults.size,
+                                                            timeStr = "-",
+                                                            scoreStr = "${if(stepGameResults.isNotEmpty()) stepGameResults.map{it.score}.average().toInt() else 0} pts",
+                                                            color = primaryColor,
+                                                            onClick = { selectedGame = "Step Game" }
+                                                        )
+                                                    }
+                                                }
+
                                                 Text("Select a Game Session", fontWeight = FontWeight.Bold, color = Color.DarkGray, fontSize = 16.sp, modifier = Modifier.padding(bottom = 12.dp))
 
-                                                LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                                                    items(gameSessions) { session ->
-                                                        Card(
-                                                            modifier = Modifier.fillMaxWidth().clickable { selectedOverviewSession = session },
-                                                            colors = CardDefaults.cardColors(containerColor = Color(0xFFF0F4F8)),
-                                                            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+                                                gameSessions.forEach { session ->
+                                                    Card(
+                                                        modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp).clickable { selectedOverviewSession = session },
+                                                        colors = CardDefaults.cardColors(containerColor = Color(0xFFF0F4F8)),
+                                                        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+                                                    ) {
+                                                        Row(
+                                                            modifier = Modifier.padding(16.dp).fillMaxWidth(),
+                                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                                            verticalAlignment = Alignment.CenterVertically
                                                         ) {
-                                                            Row(
-                                                                modifier = Modifier.padding(16.dp).fillMaxWidth(),
-                                                                horizontalArrangement = Arrangement.SpaceBetween,
-                                                                verticalAlignment = Alignment.CenterVertically
-                                                            ) {
-                                                                Column {
-                                                                    Text(text = fullDateFormatter.format(session.timestamp), fontWeight = FontWeight.Bold, fontSize = 16.sp, color = Color.Black)
+                                                            Column {
+                                                                Text(text = fullDateFormatter.format(session.timestamp), fontWeight = FontWeight.Bold, fontSize = 16.sp, color = Color.Black)
 
-                                                                    val moduleCount = session.colorSorterResults.size + session.ratPuzzleResults.size +
-                                                                            session.starshipResults.size + session.holePuzzleResults.size +
-                                                                            session.stepGameResults.size
-                                                                    Text(text = "$moduleCount Game Modules Played", fontSize = 14.sp, color = Color.DarkGray)
-                                                                }
-                                                                Icon(Icons.Default.ArrowForward, contentDescription = "View Report", tint = primaryColor)
+                                                                val moduleCount = session.colorSorterResults.size + session.ratPuzzleResults.size +
+                                                                        session.starshipResults.size + session.holePuzzleResults.size +
+                                                                        session.stepGameResults.size
+                                                                Text(text = "$moduleCount Game Modules Played", fontSize = 14.sp, color = Color.DarkGray)
                                                             }
+                                                            Icon(Icons.Default.ArrowForward, contentDescription = "View Report", tint = primaryColor)
                                                         }
                                                     }
                                                 }
+
+                                                ReportActionButtons(
+                                                    primaryColor = primaryColor,
+                                                    onShareClick = {
+                                                        gameSessions.firstOrNull()?.let { session ->
+                                                            ClinicalReportPdfManager.generateAndSharePdf(context, patient, session, true)
+                                                        } ?: Toast.makeText(context, "No session data available", Toast.LENGTH_SHORT).show()
+                                                    },
+                                                    onDownloadClick = {
+                                                        gameSessions.firstOrNull()?.let { session ->
+                                                            ClinicalReportPdfManager.generateAndSharePdf(context, patient, session, false)
+                                                        } ?: Toast.makeText(context, "No session data available", Toast.LENGTH_SHORT).show()
+                                                    }
+                                                )
                                             }
                                         } else {
                                             val session = selectedOverviewSession!!
@@ -1007,6 +1160,16 @@ fun GraphViewScreen(
                                                         selectedStepSession = res
                                                     })
                                                 }
+
+                                                ReportActionButtons(
+                                                    primaryColor = primaryColor,
+                                                    onShareClick = {
+                                                        ClinicalReportPdfManager.generateAndSharePdf(context, patient, session, true)
+                                                    },
+                                                    onDownloadClick = {
+                                                        ClinicalReportPdfManager.generateAndSharePdf(context, patient, session, false)
+                                                    }
+                                                )
                                             }
                                         }
                                     }
@@ -1022,6 +1185,11 @@ fun GraphViewScreen(
                                         }
                                     } else if (selectedStaticSession == null) {
                                         Column(modifier = Modifier.fillMaxSize()) {
+                                            Row(modifier = Modifier.clickable { selectedGame = "Overview Dashboard" }.padding(bottom = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                                                Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = primaryColor)
+                                                Spacer(modifier = Modifier.width(8.dp))
+                                                Text("Back to Overview", color = primaryColor, fontWeight = FontWeight.Bold)
+                                            }
                                             Text("Select a Session to View Graphs", fontWeight = FontWeight.Bold, color = primaryColor, fontSize = 18.sp, modifier = Modifier.padding(bottom = 16.dp))
 
                                             LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -1268,6 +1436,19 @@ fun GraphViewScreen(
                                                     }
                                                 }
                                             }
+
+                                            val parentSession = groupedSessions.find { it.sessionId == session.sessionId }
+                                            ReportActionButtons(
+                                                primaryColor = primaryColor,
+                                                onShareClick = {
+                                                    parentSession?.let { ClinicalReportPdfManager.generateAndSharePdf(context, patient, it, true) }
+                                                        ?: Toast.makeText(context, "Session data not found", Toast.LENGTH_SHORT).show()
+                                                },
+                                                onDownloadClick = {
+                                                    parentSession?.let { ClinicalReportPdfManager.generateAndSharePdf(context, patient, it, false) }
+                                                        ?: Toast.makeText(context, "Session data not found", Toast.LENGTH_SHORT).show()
+                                                }
+                                            )
                                         }
                                     }
                                 }
@@ -1282,6 +1463,11 @@ fun GraphViewScreen(
                                         }
                                     } else if (selectedPatternSession == null) {
                                         Column(modifier = Modifier.fillMaxSize()) {
+                                            Row(modifier = Modifier.clickable { selectedGame = "Overview Dashboard" }.padding(bottom = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                                                Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = primaryColor)
+                                                Spacer(modifier = Modifier.width(8.dp))
+                                                Text("Back to Overview", color = primaryColor, fontWeight = FontWeight.Bold)
+                                            }
                                             Text("Select a Pattern Session", fontWeight = FontWeight.Bold, color = primaryColor, fontSize = 18.sp, modifier = Modifier.padding(bottom = 16.dp))
                                             LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                                                 items(patternDrawingResults.sortedByDescending { it.timestamp }) { session ->
@@ -1506,6 +1692,19 @@ fun GraphViewScreen(
                                                     }
                                                 }
                                             }
+
+                                            val parentSession = groupedSessions.find { it.sessionId == session.sessionId }
+                                            ReportActionButtons(
+                                                primaryColor = primaryColor,
+                                                onShareClick = {
+                                                    parentSession?.let { ClinicalReportPdfManager.generateAndSharePdf(context, patient, it, true) }
+                                                        ?: Toast.makeText(context, "Session data not found", Toast.LENGTH_SHORT).show()
+                                                },
+                                                onDownloadClick = {
+                                                    parentSession?.let { ClinicalReportPdfManager.generateAndSharePdf(context, patient, it, false) }
+                                                        ?: Toast.makeText(context, "Session data not found", Toast.LENGTH_SHORT).show()
+                                                }
+                                            )
                                         }
                                     }
                                 }
@@ -1520,6 +1719,11 @@ fun GraphViewScreen(
                                         }
                                     } else if (selectedShapeSession == null) {
                                         Column(modifier = Modifier.fillMaxSize()) {
+                                            Row(modifier = Modifier.clickable { selectedGame = "Overview Dashboard" }.padding(bottom = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                                                Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = primaryColor)
+                                                Spacer(modifier = Modifier.width(8.dp))
+                                                Text("Back to Overview", color = primaryColor, fontWeight = FontWeight.Bold)
+                                            }
                                             Text("Select a Shape Training Session", fontWeight = FontWeight.Bold, color = primaryColor, fontSize = 18.sp, modifier = Modifier.padding(bottom = 16.dp))
                                             LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                                                 items(shapeTrainingResults.sortedByDescending { it.timestamp }) { session ->
@@ -1770,6 +1974,19 @@ fun GraphViewScreen(
                                                     }
                                                 }
                                             }
+
+                                            val parentSession = groupedSessions.find { it.sessionId == session.sessionId }
+                                            ReportActionButtons(
+                                                primaryColor = primaryColor,
+                                                onShareClick = {
+                                                    parentSession?.let { ClinicalReportPdfManager.generateAndSharePdf(context, patient, it, true) }
+                                                        ?: Toast.makeText(context, "Session data not found", Toast.LENGTH_SHORT).show()
+                                                },
+                                                onDownloadClick = {
+                                                    parentSession?.let { ClinicalReportPdfManager.generateAndSharePdf(context, patient, it, false) }
+                                                        ?: Toast.makeText(context, "Session data not found", Toast.LENGTH_SHORT).show()
+                                                }
+                                            )
                                         }
                                     }
                                 }
@@ -1784,6 +2001,11 @@ fun GraphViewScreen(
                                         }
                                     } else if (selectedColorSorterSession == null) {
                                         Column(modifier = Modifier.fillMaxSize()) {
+                                            Row(modifier = Modifier.clickable { selectedGame = "Overview Dashboard" }.padding(bottom = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                                                Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = primaryColor)
+                                                Spacer(modifier = Modifier.width(8.dp))
+                                                Text("Back to Overview", color = primaryColor, fontWeight = FontWeight.Bold)
+                                            }
                                             Text("Select a Color Sorter Session", fontWeight = FontWeight.Bold, color = primaryColor, fontSize = 18.sp, modifier = Modifier.padding(bottom = 16.dp))
                                             LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                                                 items(colorSorterResults.sortedByDescending { it.timestamp }) { session ->
@@ -1843,6 +2065,19 @@ fun GraphViewScreen(
                                                     Text("🟢 Green Sorted: ${session.greenCollected}", color = Color.DarkGray)
                                                 }
                                             }
+
+                                            val parentSession = groupedSessions.find { it.sessionId == session.sessionId }
+                                            ReportActionButtons(
+                                                primaryColor = primaryColor,
+                                                onShareClick = {
+                                                    parentSession?.let { ClinicalReportPdfManager.generateAndSharePdf(context, patient, it, true) }
+                                                        ?: Toast.makeText(context, "Session data not found", Toast.LENGTH_SHORT).show()
+                                                },
+                                                onDownloadClick = {
+                                                    parentSession?.let { ClinicalReportPdfManager.generateAndSharePdf(context, patient, it, false) }
+                                                        ?: Toast.makeText(context, "Session data not found", Toast.LENGTH_SHORT).show()
+                                                }
+                                            )
                                         }
                                     }
                                 }
@@ -1857,6 +2092,11 @@ fun GraphViewScreen(
                                         }
                                     } else if (selectedRatSession == null) {
                                         Column(modifier = Modifier.fillMaxSize()) {
+                                            Row(modifier = Modifier.clickable { selectedGame = "Overview Dashboard" }.padding(bottom = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                                                Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = primaryColor)
+                                                Spacer(modifier = Modifier.width(8.dp))
+                                                Text("Back to Overview", color = primaryColor, fontWeight = FontWeight.Bold)
+                                            }
                                             Text("Select a Maze Session", fontWeight = FontWeight.Bold, color = primaryColor, fontSize = 18.sp, modifier = Modifier.padding(bottom = 16.dp))
                                             LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                                                 items(ratPuzzleResults.sortedByDescending { it.timestamp }) { session ->
@@ -1920,6 +2160,19 @@ fun GraphViewScreen(
                                                     Text("Lives Remaining: ${session.livesRemaining} / 3", color = Color.DarkGray)
                                                 }
                                             }
+
+                                            val parentSession = groupedSessions.find { it.sessionId == session.sessionId }
+                                            ReportActionButtons(
+                                                primaryColor = primaryColor,
+                                                onShareClick = {
+                                                    parentSession?.let { ClinicalReportPdfManager.generateAndSharePdf(context, patient, it, true) }
+                                                        ?: Toast.makeText(context, "Session data not found", Toast.LENGTH_SHORT).show()
+                                                },
+                                                onDownloadClick = {
+                                                    parentSession?.let { ClinicalReportPdfManager.generateAndSharePdf(context, patient, it, false) }
+                                                        ?: Toast.makeText(context, "Session data not found", Toast.LENGTH_SHORT).show()
+                                                }
+                                            )
                                         }
                                     }
                                 }
@@ -1934,6 +2187,11 @@ fun GraphViewScreen(
                                         }
                                     } else if (selectedStarshipSession == null) {
                                         Column(modifier = Modifier.fillMaxSize()) {
+                                            Row(modifier = Modifier.clickable { selectedGame = "Overview Dashboard" }.padding(bottom = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                                                Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = primaryColor)
+                                                Spacer(modifier = Modifier.width(8.dp))
+                                                Text("Back to Overview", color = primaryColor, fontWeight = FontWeight.Bold)
+                                            }
                                             Text("Select a Mission Log", fontWeight = FontWeight.Bold, color = primaryColor, fontSize = 18.sp, modifier = Modifier.padding(bottom = 16.dp))
                                             LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                                                 items(starshipResults.sortedByDescending { it.timestamp }) { session ->
@@ -1996,6 +2254,19 @@ fun GraphViewScreen(
                                                     Text("Aliens Destroyed: ${session.aliensDestroyed}", color = Color.DarkGray)
                                                 }
                                             }
+
+                                            val parentSession = groupedSessions.find { it.sessionId == session.sessionId }
+                                            ReportActionButtons(
+                                                primaryColor = primaryColor,
+                                                onShareClick = {
+                                                    parentSession?.let { ClinicalReportPdfManager.generateAndSharePdf(context, patient, it, true) }
+                                                        ?: Toast.makeText(context, "Session data not found", Toast.LENGTH_SHORT).show()
+                                                },
+                                                onDownloadClick = {
+                                                    parentSession?.let { ClinicalReportPdfManager.generateAndSharePdf(context, patient, it, false) }
+                                                        ?: Toast.makeText(context, "Session data not found", Toast.LENGTH_SHORT).show()
+                                                }
+                                            )
                                         }
                                     }
                                 }
@@ -2010,6 +2281,11 @@ fun GraphViewScreen(
                                         }
                                     } else if (selectedHoleSession == null) {
                                         Column(modifier = Modifier.fillMaxSize()) {
+                                            Row(modifier = Modifier.clickable { selectedGame = "Overview Dashboard" }.padding(bottom = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                                                Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = primaryColor)
+                                                Spacer(modifier = Modifier.width(8.dp))
+                                                Text("Back to Overview", color = primaryColor, fontWeight = FontWeight.Bold)
+                                            }
                                             Text("Select a Run Session", fontWeight = FontWeight.Bold, color = primaryColor, fontSize = 18.sp, modifier = Modifier.padding(bottom = 16.dp))
                                             LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                                                 items(holePuzzleResults.sortedByDescending { it.timestamp }) { session ->
@@ -2072,6 +2348,19 @@ fun GraphViewScreen(
                                                     Text("Obstacles Dodged: ${session.holesDodged}", color = Color.DarkGray)
                                                 }
                                             }
+
+                                            val parentSession = groupedSessions.find { it.sessionId == session.sessionId }
+                                            ReportActionButtons(
+                                                primaryColor = primaryColor,
+                                                onShareClick = {
+                                                    parentSession?.let { ClinicalReportPdfManager.generateAndSharePdf(context, patient, it, true) }
+                                                        ?: Toast.makeText(context, "Session data not found", Toast.LENGTH_SHORT).show()
+                                                },
+                                                onDownloadClick = {
+                                                    parentSession?.let { ClinicalReportPdfManager.generateAndSharePdf(context, patient, it, false) }
+                                                        ?: Toast.makeText(context, "Session data not found", Toast.LENGTH_SHORT).show()
+                                                }
+                                            )
                                         }
                                     }
                                 }
@@ -2086,6 +2375,11 @@ fun GraphViewScreen(
                                         }
                                     } else if (selectedStepSession == null) {
                                         Column(modifier = Modifier.fillMaxSize()) {
+                                            Row(modifier = Modifier.clickable { selectedGame = "Overview Dashboard" }.padding(bottom = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                                                Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = primaryColor)
+                                                Spacer(modifier = Modifier.width(8.dp))
+                                                Text("Back to Overview", color = primaryColor, fontWeight = FontWeight.Bold)
+                                            }
                                             Text("Select a Cognitive Session", fontWeight = FontWeight.Bold, color = primaryColor, fontSize = 18.sp, modifier = Modifier.padding(bottom = 16.dp))
                                             LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                                                 items(stepGameResults.sortedByDescending { it.timestamp }) { session ->
@@ -2148,6 +2442,19 @@ fun GraphViewScreen(
                                                     Text("❌ Incorrect Selections: ${session.incorrectHits}", color = Color.Red)
                                                 }
                                             }
+
+                                            val parentSession = groupedSessions.find { it.sessionId == session.sessionId }
+                                            ReportActionButtons(
+                                                primaryColor = primaryColor,
+                                                onShareClick = {
+                                                    parentSession?.let { ClinicalReportPdfManager.generateAndSharePdf(context, patient, it, true) }
+                                                        ?: Toast.makeText(context, "Session data not found", Toast.LENGTH_SHORT).show()
+                                                },
+                                                onDownloadClick = {
+                                                    parentSession?.let { ClinicalReportPdfManager.generateAndSharePdf(context, patient, it, false) }
+                                                        ?: Toast.makeText(context, "Session data not found", Toast.LENGTH_SHORT).show()
+                                                }
+                                            )
                                         }
                                     }
                                 }
@@ -2167,8 +2474,439 @@ fun GraphViewScreen(
 }
 
 // ==========================================
-// HELPER COMPONENTS
+// UNIFIED PATIENT JOURNEY DASHBOARD
 // ==========================================
+@Composable
+fun PatientJourneyDashboard(groupedSessions: List<GroupedSession>, primaryColor: Color, fullDateFormatter: SimpleDateFormat, onSessionClick: (GroupedSession) -> Unit) {
+    if (groupedSessions.isEmpty()) {
+        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Text("Your journey begins here. Complete a session to see your progress!", color = Color.Gray)
+        }
+        return
+    }
+
+    // Goal Calculations (Rolling 7 days logic simulated)
+    val weeklyTimeGoalSecs = 1800f // 30 minutes
+    val weeklyStabilityGoal = 80f  // 80%
+
+    // Take up to the last 5 sessions for the "current week"
+    val recentSessions = groupedSessions.take(5)
+
+    val totalTimeSecs = recentSessions.sumOf { it.totalTimeMs } / 1000f
+
+    // Calculate an average stability score for the goals
+    val avgScores = recentSessions.mapNotNull { session ->
+        val latestStatic = session.staticResults.maxByOrNull { it.timestamp }
+        val latestPattern = session.patternResults.maxByOrNull { it.timestamp }
+        val latestShape = session.shapeResults.maxByOrNull { it.timestamp }
+        val staticScore = ((latestStatic?.efficiencyPercentage?.toFloat() ?: 0f) / 100f * calculateClinicalWeight(latestStatic?.gameMode, latestStatic?.level)).coerceAtMost(1f)
+        val patternScore = (if (latestPattern != null && latestPattern.totalTargets > 0) (latestPattern.targetsHit.toFloat() / latestPattern.totalTargets) else 0f * calculateClinicalWeight(latestPattern?.gameMode, latestPattern?.level)).coerceAtMost(1f)
+        val shapeScore = ((latestShape?.score?.toFloat() ?: 0f) / 10f * calculateClinicalWeight(latestShape?.gameMode, latestShape?.level)).coerceAtMost(1f)
+        val mods = listOfNotNull(latestStatic, latestPattern, latestShape).size
+        if (mods > 0) ((staticScore + patternScore + shapeScore) / mods.toFloat()) * 100 else null
+    }
+    val currentStability = if (avgScores.isNotEmpty()) avgScores.average().toFloat() else 0f
+
+    val timeProgress = (totalTimeSecs / weeklyTimeGoalSecs).coerceIn(0f, 1f)
+    val stabilityProgress = (currentStability / weeklyStabilityGoal).coerceIn(0f, 1f)
+
+    Column(modifier = Modifier.fillMaxSize()) {
+
+        // --- CONCEPT 1: GOAL RINGS ---
+        Card(
+            modifier = Modifier.fillMaxWidth().padding(bottom = 24.dp),
+            shape = RoundedCornerShape(8.dp),
+            colors = CardDefaults.cardColors(containerColor = Color(0xFFFAFAFA)),
+            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+            border = BorderStroke(1.dp, Color(0xFFEEEEEE))
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Text("Weekly Objectives", fontWeight = FontWeight.Bold, fontSize = 16.sp, color = Color.DarkGray)
+                Spacer(modifier = Modifier.height(16.dp))
+
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+                    GoalRing(
+                        progress = timeProgress,
+                        color = Color(0xFF4CAF50),
+                        icon = Icons.Default.Favorite,
+                        label = "Active Time",
+                        valueText = "${(totalTimeSecs / 60).toInt()}m",
+                        targetText = "Goal: 30m"
+                    )
+
+                    GoalRing(
+                        progress = stabilityProgress,
+                        color = primaryColor,
+                        icon = Icons.Default.Star,
+                        label = "Avg Stability",
+                        valueText = "${currentStability.toInt()}%",
+                        targetText = "Goal: 80%"
+                    )
+                }
+            }
+        }
+
+        Text("Your Recovery Journey", fontWeight = FontWeight.Bold, fontSize = 18.sp, color = primaryColor, modifier = Modifier.padding(bottom = 16.dp))
+
+        // --- CONCEPT 2: TIMELINE ---
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(bottom = 24.dp)
+        ) {
+            itemsIndexed(groupedSessions) { index, session ->
+                val isFirst = index == 0
+                val isLast = index == groupedSessions.lastIndex
+
+                // Determine Milestone dynamically
+                val milestone = when {
+                    session.totalFalls == 0 && session.totalModulesPlayed > 0 -> "🏆 Flawless Balance!"
+                    session.totalModulesPlayed >= 4 -> "🔥 Mega Session!"
+                    else -> "✅ Session Complete"
+                }
+
+                val milestoneColor = if (session.totalFalls == 0 && session.totalModulesPlayed > 0) Color(0xFFFFC107) else primaryColor
+
+                TimelineNode(
+                    isFirst = isFirst,
+                    isLast = isLast,
+                    nodeColor = milestoneColor,
+                    dateText = fullDateFormatter.format(session.timestamp),
+                    milestoneText = milestone,
+                    modulesText = "${session.totalModulesPlayed} Exercises Played",
+                    onClick = { onSessionClick(session) }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun GoalRing(progress: Float, color: Color, icon: androidx.compose.ui.graphics.vector.ImageVector, label: String, valueText: String, targetText: String) {
+    val animatedProgress by animateFloatAsState(targetValue = progress, animationSpec = tween(1000))
+
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Box(contentAlignment = Alignment.Center, modifier = Modifier.size(100.dp)) {
+            CircularProgressIndicator(
+                progress = 1f,
+                color = Color(0xFFEEEEEE),
+                strokeWidth = 10.dp,
+                modifier = Modifier.fillMaxSize()
+            )
+            CircularProgressIndicator(
+                progress = animatedProgress,
+                color = color,
+                strokeWidth = 10.dp,
+                strokeCap = StrokeCap.Round,
+                modifier = Modifier.fillMaxSize()
+            )
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Icon(icon, contentDescription = null, tint = color, modifier = Modifier.size(24.dp))
+                Text(valueText, fontWeight = FontWeight.Bold, fontSize = 20.sp, color = Color.DarkGray)
+            }
+        }
+        Spacer(modifier = Modifier.height(8.dp))
+        Text(label, fontWeight = FontWeight.Bold, fontSize = 14.sp, color = Color.DarkGray)
+        Text(targetText, fontSize = 12.sp, color = Color.Gray)
+    }
+}
+
+@Composable
+fun TimelineNode(isFirst: Boolean, isLast: Boolean, nodeColor: Color, dateText: String, milestoneText: String, modulesText: String, onClick: () -> Unit) {
+    Row(modifier = Modifier.fillMaxWidth().height(IntrinsicSize.Min)) {
+        // Timeline Line & Dot
+        Box(modifier = Modifier.width(40.dp).fillMaxHeight(), contentAlignment = Alignment.TopCenter) {
+            if (!isLast) {
+                Box(modifier = Modifier.width(2.dp).fillMaxHeight().background(Color.LightGray))
+            }
+
+            Box(
+                modifier = Modifier
+                    .padding(top = 16.dp)
+                    .size(16.dp)
+                    .background(nodeColor, CircleShape)
+                    .border(2.dp, Color.White, CircleShape)
+            )
+        }
+
+        // Content Card
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(bottom = 16.dp, end = 8.dp)
+                .clickable { onClick() },
+            colors = CardDefaults.cardColors(containerColor = Color(0xFFF0F4F8)),
+            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Text(dateText, fontSize = 12.sp, color = Color.Gray)
+                Spacer(modifier = Modifier.height(4.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (milestoneText.contains("Flawless") || milestoneText.contains("Mega")) {
+                        Icon(Icons.Default.Star, contentDescription = null, tint = nodeColor, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                    }
+                    Text(milestoneText, fontWeight = FontWeight.Bold, fontSize = 16.sp, color = nodeColor)
+                }
+                Text(modulesText, fontSize = 14.sp, color = Color.DarkGray, modifier = Modifier.padding(top = 4.dp))
+            }
+        }
+    }
+}
+
+// ==========================================
+// NEW: TREND CHART (Line Graph)
+// ==========================================
+@Composable
+fun PerformanceTrendChart(scores: List<Float>, targetScore: Float = 50f, primaryColor: Color) {
+    Card(
+        modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp),
+        colors = CardDefaults.cardColors(containerColor = Color.White),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            if (scores.isEmpty()) {
+                Text("Performance trend", fontWeight = FontWeight.Bold, color = primaryColor, fontSize = 16.sp, modifier = Modifier.padding(bottom = 16.dp))
+                Box(modifier = Modifier.fillMaxWidth().height(200.dp), contentAlignment = Alignment.Center) {
+                    Text("Not enough data to show trend.", color = Color.Gray)
+                }
+                return@Card
+            }
+
+            Box(modifier = Modifier.fillMaxWidth().height(260.dp).padding(top = 16.dp, bottom = 8.dp, end = 8.dp)) {
+                Canvas(modifier = Modifier.fillMaxSize()) {
+                    val canvasWidth = size.width
+                    val canvasHeight = size.height
+
+                    // Padding for axes and labels
+                    val paddingLeft = 50.dp.toPx()
+                    val paddingBottom = 40.dp.toPx()
+                    val paddingTop = 40.dp.toPx()
+                    val paddingRight = 20.dp.toPx()
+
+                    val chartWidth = canvasWidth - paddingLeft - paddingRight
+                    val chartHeight = canvasHeight - paddingBottom - paddingTop
+
+                    // Paints for Text
+                    val titlePaint = Paint().apply {
+                        color = android.graphics.Color.BLACK
+                        textSize = 18.sp.toPx()
+                        textAlign = Paint.Align.CENTER
+                        isAntiAlias = true
+                        isFakeBoldText = true
+                    }
+                    val labelPaint = Paint().apply {
+                        color = android.graphics.Color.BLACK
+                        textSize = 14.sp.toPx()
+                        textAlign = Paint.Align.CENTER
+                        isAntiAlias = true
+                    }
+                    val yAxisLabelPaint = Paint().apply {
+                        color = android.graphics.Color.BLACK
+                        textSize = 16.sp.toPx()
+                        textAlign = Paint.Align.CENTER
+                        isAntiAlias = true
+                    }
+
+                    // 1. Draw Title
+                    drawContext.canvas.nativeCanvas.drawText(
+                        "Performance trend",
+                        canvasWidth / 2,
+                        paddingTop / 2,
+                        titlePaint
+                    )
+
+                    // 2. Draw Y-Axis Label (Rotated)
+                    drawContext.canvas.nativeCanvas.apply {
+                        save()
+                        rotate(-90f, paddingLeft / 2 - 10f, canvasHeight / 2)
+                        drawText("Score", paddingLeft / 2 - 10f, canvasHeight / 2, yAxisLabelPaint)
+                        restore()
+                    }
+
+                    // Calculate max scale dynamically (with a minimum bounds to make it look good)
+                    val maxScore = maxOf(100f, scores.maxOrNull() ?: 100f, targetScore * 1.5f)
+
+                    // 3. Draw Grid Lines
+                    val numHGrid = 6
+                    val dashEffect = PathEffect.dashPathEffect(floatArrayOf(10f, 10f), 0f)
+
+                    // Horizontal Grid
+                    for (i in 0..numHGrid) {
+                        val y = paddingTop + (chartHeight * i / numHGrid)
+                        drawLine(
+                            color = Color.LightGray.copy(alpha = 0.7f),
+                            start = Offset(paddingLeft, y),
+                            end = Offset(canvasWidth - paddingRight, y),
+                            strokeWidth = 1.dp.toPx(),
+                            pathEffect = dashEffect
+                        )
+                    }
+
+                    val xStep = if (scores.size > 1) chartWidth / (scores.size - 1).toFloat() else chartWidth
+
+                    // Vertical Grid & X-Axis Labels
+                    for (i in 0 until scores.size) {
+                        val x = paddingLeft + (i * xStep)
+                        drawLine(
+                            color = Color.LightGray.copy(alpha = 0.7f),
+                            start = Offset(x, paddingTop),
+                            end = Offset(x, canvasHeight - paddingBottom),
+                            strokeWidth = 1.dp.toPx(),
+                            pathEffect = dashEffect
+                        )
+                        // X-Axis Labels (S 1, S 2, etc.)
+                        drawContext.canvas.nativeCanvas.drawText("S ${i + 1}", x, canvasHeight - paddingBottom + 25.dp.toPx(), labelPaint)
+                    }
+
+                    // 4. Draw Baseline (Target Score)
+                    val targetY = paddingTop + chartHeight - ((targetScore / maxScore) * chartHeight)
+                    drawLine(
+                        color = Color.Gray,
+                        start = Offset(paddingLeft, targetY),
+                        end = Offset(canvasWidth - paddingRight, targetY),
+                        strokeWidth = 2.dp.toPx(),
+                        pathEffect = PathEffect.dashPathEffect(floatArrayOf(5f, 5f), 0f)
+                    )
+
+                    // 5. Draw Solid Axes with Arrows
+                    val axisColor = Color(0xFF333333)
+                    val axisStroke = 1.5.dp.toPx()
+
+                    // Y-Axis
+                    drawLine(
+                        color = axisColor,
+                        start = Offset(paddingLeft, paddingTop - 15f),
+                        end = Offset(paddingLeft, canvasHeight - paddingBottom),
+                        strokeWidth = axisStroke
+                    )
+                    // Y-Axis Arrow
+                    val yArrow = Path().apply {
+                        moveTo(paddingLeft, paddingTop - 25f)
+                        lineTo(paddingLeft - 8f, paddingTop - 5f)
+                        lineTo(paddingLeft + 8f, paddingTop - 5f)
+                        close()
+                    }
+                    drawPath(yArrow, axisColor)
+
+                    // X-Axis
+                    drawLine(
+                        color = axisColor,
+                        start = Offset(paddingLeft, canvasHeight - paddingBottom),
+                        end = Offset(canvasWidth - paddingRight + 15f, canvasHeight - paddingBottom),
+                        strokeWidth = axisStroke
+                    )
+                    // X-Axis Arrow
+                    val xArrow = Path().apply {
+                        moveTo(canvasWidth - paddingRight + 25f, canvasHeight - paddingBottom)
+                        lineTo(canvasWidth - paddingRight + 5f, canvasHeight - paddingBottom - 8f)
+                        lineTo(canvasWidth - paddingRight + 5f, canvasHeight - paddingBottom + 8f)
+                        close()
+                    }
+                    drawPath(xArrow, axisColor)
+
+                    // Calculate point coordinates
+                    val points = scores.mapIndexed { index, score ->
+                        val x = paddingLeft + (index * xStep)
+                        val y = paddingTop + chartHeight - ((score / maxScore) * chartHeight)
+                        Offset(x, y)
+                    }
+
+                    // 6. Draw Connecting Line (Solid Black)
+                    if (points.size > 1) {
+                        val linePath = Path()
+                        points.forEachIndexed { index, offset ->
+                            if (index == 0) linePath.moveTo(offset.x, offset.y)
+                            else linePath.lineTo(offset.x, offset.y)
+                        }
+                        drawPath(
+                            path = linePath,
+                            color = Color.Black,
+                            style = Stroke(width = 2.dp.toPx(), join = StrokeJoin.Round)
+                        )
+                    }
+
+                    // 7. Draw Nodes (White fill, Colored stroke based on Y position)
+                    points.forEach { offset ->
+                        // Visual match: Lower Y (higher on screen) = Red, Middle = Orange, Lower = Green
+                        val nodeColor = when {
+                            offset.y < targetY - 20f -> Color(0xFFD32F2F) // Red (Worse / High)
+                            offset.y > targetY + 20f -> Color(0xFF388E3C) // Green (Better / Low)
+                            else -> Color(0xFFFBC02D)                     // Orange/Yellow (Near Target)
+                        }
+
+                        // Inner white circle
+                        drawCircle(
+                            color = Color.White,
+                            radius = 6.dp.toPx(),
+                            center = offset
+                        )
+                        // Thick colored outer ring
+                        drawCircle(
+                            color = nodeColor,
+                            radius = 6.dp.toPx(),
+                            center = offset,
+                            style = Stroke(width = 3.dp.toPx())
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ==========================================
+// EXISTING HELPER COMPONENTS
+// ==========================================
+
+@Composable
+fun ReportActionButtons(
+    primaryColor: Color,
+    onShareClick: () -> Unit,
+    onDownloadClick: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 16.dp, bottom = 32.dp),
+        horizontalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        OutlinedButton(
+            onClick = onShareClick,
+            modifier = Modifier.weight(1f),
+            border = BorderStroke(1.dp, primaryColor),
+            colors = ButtonDefaults.outlinedButtonColors(contentColor = primaryColor)
+        ) {
+            Text("Share", fontWeight = FontWeight.Bold)
+        }
+
+        Button(
+            onClick = onDownloadClick,
+            modifier = Modifier.weight(1f),
+            colors = ButtonDefaults.buttonColors(containerColor = primaryColor)
+        ) {
+            Text("Download PDF", fontWeight = FontWeight.Bold)
+        }
+    }
+}
+
+@Composable
+fun BreakdownRow(title: String, plays: Int, timeStr: String, scoreStr: String, color: Color, onClick: () -> Unit) {
+    Column(modifier = Modifier.fillMaxWidth().clickable { onClick() }.padding(vertical = 8.dp, horizontal = 4.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(title, fontWeight = FontWeight.Bold, color = Color.DarkGray, fontSize = 14.sp, modifier = Modifier.weight(2f))
+            Text("$plays Plays", color = Color.Gray, fontSize = 12.sp, modifier = Modifier.weight(1.2f), textAlign = TextAlign.Center)
+            Text(timeStr, color = Color.Gray, fontSize = 12.sp, modifier = Modifier.weight(1.2f), textAlign = TextAlign.Center)
+            Text(scoreStr, fontWeight = FontWeight.Bold, color = color, fontSize = 14.sp, modifier = Modifier.weight(1.5f), textAlign = TextAlign.End)
+            Icon(Icons.Default.ArrowForward, contentDescription = "View", tint = Color.LightGray, modifier = Modifier.size(16.dp).padding(start = 4.dp))
+        }
+        Spacer(modifier = Modifier.height(8.dp))
+        HorizontalDivider(color = Color(0xFFEEEEEE))
+    }
+}
 
 @Composable
 fun InfoSection(text: String) {
@@ -2235,12 +2973,12 @@ fun ClinicalRadarChart(currentScores: List<Float>, prevScores: List<Float>, labe
         }
 
         angles.forEachIndexed { index, angle ->
-            val endX = centerX + (maxRadius * cos(angle)).toFloat()
-            val endY = centerY + (maxRadius * sin(angle)).toFloat()
+            val endX = centerX + (maxRadius * 1.2f * cos(angle)).toFloat()
+            val endY = centerY + (maxRadius * 1.2f * sin(angle)).toFloat()
             drawLine(color = Color.LightGray, start = Offset(centerX, centerY), end = Offset(endX, endY), strokeWidth = 2f)
 
-            val labelX = centerX + (maxRadius * 1.2f * cos(angle)).toFloat()
-            val labelY = centerY + (maxRadius * 1.2f * sin(angle)).toFloat()
+            val labelX = centerX + (maxRadius * 1.3f * cos(angle)).toFloat()
+            val labelY = centerY + (maxRadius * 1.3f * sin(angle)).toFloat()
             drawContext.canvas.nativeCanvas.drawText(labels[index], labelX, labelY + 12f, textPaint)
         }
 
@@ -2321,66 +3059,6 @@ fun HeatmapLegendItem(label: String, color: Color) {
         Box(modifier = Modifier.size(12.dp).background(color, RoundedCornerShape(2.dp)))
         Spacer(modifier = Modifier.width(4.dp))
         Text(text = label, fontSize = 12.sp, color = Color.DarkGray, fontWeight = FontWeight.Bold)
-    }
-}
-
-@Composable
-fun GameSelectorDropdown(
-    items: List<String>,
-    selectedItem: String,
-    onItemSelected: (String) -> Unit,
-    primaryColor: Color
-) {
-    var expanded by remember { mutableStateOf(false) }
-
-    Box(contentAlignment = Alignment.Center) {
-        Surface(
-            modifier = Modifier
-                .clip(RoundedCornerShape(50))
-                .clickable { expanded = true },
-            color = primaryColor.copy(alpha = 0.2f),
-        ) {
-            Row(
-                modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.Center
-            ) {
-                Text(
-                    text = selectedItem,
-                    color = primaryColor,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 16.sp
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                Icon(
-                    imageVector = Icons.Default.KeyboardArrowDown,
-                    contentDescription = "Select Module",
-                    tint = primaryColor
-                )
-            }
-        }
-
-        DropdownMenu(
-            expanded = expanded,
-            onDismissRequest = { expanded = false },
-            modifier = Modifier.background(Color.White)
-        ) {
-            items.forEach { item ->
-                DropdownMenuItem(
-                    text = {
-                        Text(
-                            text = item,
-                            color = if (item == selectedItem) primaryColor else Color.DarkGray,
-                            fontWeight = if (item == selectedItem) FontWeight.Bold else FontWeight.Normal
-                        )
-                    },
-                    onClick = {
-                        onItemSelected(item)
-                        expanded = false
-                    }
-                )
-            }
-        }
     }
 }
 
@@ -2596,7 +3274,6 @@ fun ClinicalErrorBarChart(title: String, errors: List<Float>, barLabelPrefix: St
                                     else -> Color(0xFFF44336)
                                 }
                             }
-
                             Column(
                                 modifier = Modifier.fillMaxHeight(),
                                 horizontalAlignment = Alignment.CenterHorizontally,
